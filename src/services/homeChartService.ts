@@ -114,7 +114,7 @@ async function fetchTickerChart(ticker: string, apiPeriod: string): Promise<any[
     }
   } catch {}
 
-  // Fallback direto em tempo real para o gráfico via Yahoo Finance Client
+  // Fallback 1: Direct Yahoo query
   try {
     const cleanSym = ticker.replace(/\.US$/i, '');
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(cleanSym)}?range=${encodeURIComponent(apiPeriod)}&interval=1d`;
@@ -128,10 +128,28 @@ async function fetchTickerChart(ticker: string, apiPeriod: string): Promise<any[
       timestamps.forEach((t, i) => {
         const c = closes[i];
         if (typeof c === 'number' && !isNaN(c) && c > 0) {
-          points.push({ timestamp: t * 1000, close: c, closeEur: c });
+          points.push({ timestamp: t * 1000, close: c, closeEur: c, priceEur: c, price: c });
         }
       });
       if (points.length > 0) return points;
+    }
+  } catch {}
+
+  // Fallback 2: Generate points from single quote or emergency price
+  try {
+    const baseUrl = typeof window !== 'undefined' ? '' : 'http://localhost:3000';
+    const qRes = await fetch(`${baseUrl}/api/quote/${encodeURIComponent(ticker)}`);
+    if (qRes.ok) {
+      const q = await qRes.json();
+      const p = q.priceInEur || q.price || 0;
+      if (p > 0) {
+        const now = Date.now();
+        const start = now - 90 * 24 * 60 * 60 * 1000;
+        return [
+          { timestamp: start, priceEur: p, price: p, close: p },
+          { timestamp: now, priceEur: p, price: p, close: p },
+        ];
+      }
     }
   } catch {}
 

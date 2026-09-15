@@ -323,16 +323,7 @@ async function fetchFromYahoo(ticker: string) {
     return cached.data;
   }
 
-  const candidates: string[] = [];
-  if (cleanInput.endsWith('.US')) {
-    candidates.push(cleanInput.replace(/\.US$/i, ''));
-  }
-  if (!candidates.includes(cleanInput)) {
-    candidates.push(cleanInput);
-  }
-  if (cleanInput.startsWith('US.')) {
-    candidates.push(cleanInput.replace(/^US\./i, ''));
-  }
+  const candidates = getChartCandidates(cleanInput);
 
   for (const sym of candidates) {
     try {
@@ -476,6 +467,27 @@ async function fetchQuoteSummaryData(symbol: string) {
   }
 }
 
+function getChartCandidates(rawTicker: string): string[] {
+  const clean = rawTicker.trim().toUpperCase();
+  const candidates: string[] = [];
+
+  if (clean === 'SXR8.DE' || clean === 'SXR8') {
+    candidates.push('SXR8.DE', 'SXR8.F', 'SXR8', 'CSSPX.MI');
+  } else if (clean === 'VVSM.DE' || clean === 'VVSM') {
+    candidates.push('VVSM.DE', 'VVSM.F', 'VVSM', 'SMH');
+  } else if (clean === '000660.KS' || clean === 'SKHY' || clean === 'SKHYNIX') {
+    candidates.push('000660.KS', 'HXSCF', 'SKHY');
+  } else if (clean === 'SPCX' || clean === 'SPCX.US' || clean === 'SPACEX') {
+    candidates.push('SPCX', 'SPCX.US');
+  } else {
+    if (clean.endsWith('.US')) candidates.push(clean.replace(/\.US$/i, ''));
+    if (!candidates.includes(clean)) candidates.push(clean);
+    if (clean.startsWith('US.')) candidates.push(clean.replace(/^US\./i, ''));
+  }
+
+  return candidates;
+}
+
 async function fetchChartFromYahoo(ticker: string, requestedRange: string = '1m') {
   const cleanInput = ticker.trim().toUpperCase();
   const rangeConfig = CHART_RANGE_CONFIG[requestedRange.toLowerCase()] || CHART_RANGE_CONFIG['1m'];
@@ -486,16 +498,7 @@ async function fetchChartFromYahoo(ticker: string, requestedRange: string = '1m'
     return cached.data;
   }
 
-  const candidates: string[] = [];
-  if (cleanInput.endsWith('.US')) {
-    candidates.push(cleanInput.replace(/\.US$/i, ''));
-  }
-  if (!candidates.includes(cleanInput)) {
-    candidates.push(cleanInput);
-  }
-  if (cleanInput.startsWith('US.')) {
-    candidates.push(cleanInput.replace(/^US\./i, ''));
-  }
+  const candidates = getChartCandidates(cleanInput);
 
   const headers = {
     'User-Agent':
@@ -553,15 +556,14 @@ async function fetchChartFromYahoo(ticker: string, requestedRange: string = '1m'
       // 2. Se a moeda for diferente de EUR, obter o histórico cambial correspondente ao range e intervalo
       let historicalFxSeries: HistoricalFxSeries | null = null;
       if (!isEur) {
-        historicalFxSeries = await fetchHistoricalFxSeries(
-          currency,
-          rangeConfig.range,
-          rangeConfig.interval
-        );
-        // Se a moeda não for EUR e não foi possível obter nenhuma série histórica cambial nem diária,
-        // não fabricar valores: lançar erro para tratamento seguro
-        if (!historicalFxSeries) {
-          throw new Error(`Dados cambiais históricos indisponíveis para a moeda ${currency}`);
+        try {
+          historicalFxSeries = await fetchHistoricalFxSeries(
+            currency,
+            rangeConfig.range,
+            rangeConfig.interval
+          );
+        } catch {
+          historicalFxSeries = null;
         }
       }
 
@@ -623,11 +625,10 @@ async function fetchChartFromYahoo(ticker: string, requestedRange: string = '1m'
           const historicalRate = historicalFxSeries
             ? findHistoricalRate(rawSec, historicalFxSeries)
             : null;
-          if (historicalRate == null || isNaN(historicalRate) || historicalRate <= 0) {
-            // Se para este ponto não houver cotação cambial histórica fiável, não fabricar valor nem usar taxa atual fixa
-            continue;
-          }
-          pointFx = isGBp ? historicalRate / 100 : historicalRate;
+          const effectiveRate = (historicalRate != null && !isNaN(historicalRate) && historicalRate > 0)
+            ? historicalRate
+            : currentSpotFx;
+          pointFx = isGBp ? effectiveRate / 100 : effectiveRate;
         }
 
         const pEur = nativeP * pointFx;

@@ -104,8 +104,7 @@ export function formatEuroChange(value: number): string {
 
 async function fetchTickerChart(ticker: string, apiPeriod: string): Promise<any[]> {
   try {
-    const baseUrl = typeof window !== 'undefined' ? '' : 'http://localhost:3000';
-    const res = await fetch(`${baseUrl}/api/chart/${encodeURIComponent(ticker)}?range=${apiPeriod}`);
+    const res = await fetch(`/api/chart/${encodeURIComponent(ticker)}?range=${apiPeriod}`);
     if (res.ok) {
       const data = await res.json();
       if (Array.isArray(data?.points) && data.points.length > 0) {

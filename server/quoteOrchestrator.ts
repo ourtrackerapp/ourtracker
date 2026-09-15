@@ -151,14 +151,20 @@ export async function fetchSingleQuoteWithFallback(
   }
 
   // Calculate live FX rate to EUR
-  const currency = (rawQuote.currency || 'EUR').toUpperCase();
+  let rawPrice = Number(rawQuote.price);
+  let currency = (rawQuote.currency || 'EUR').toUpperCase();
+  if (currency === 'GBP' || currency === 'GBX' || currency === 'PENCE') {
+    rawPrice = rawPrice / 100;
+    currency = 'GBP';
+  }
+
   const fxRateToEur = await getLiveFxRateToEur(currency);
-  const priceInEur = Number((rawQuote.price * fxRateToEur).toFixed(4));
+  const priceInEur = Number((rawPrice * fxRateToEur).toFixed(4));
 
   const quoteResponse: StandardQuoteResponse = {
     ticker: cleanTicker,
     name: rawQuote.name || cleanTicker,
-    price: Number(rawQuote.price),
+    price: Number(rawPrice.toFixed(4)),
     currency,
     fxRateToEur,
     priceInEur,

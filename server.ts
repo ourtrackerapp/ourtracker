@@ -544,11 +544,11 @@ async function fetchChartFromYahoo(ticker: string, requestedRange: string = '1m'
 
       const meta = result.meta;
       const currency = (meta.currency || 'USD').toUpperCase();
-      const isGBp = currency === 'GBP' || currency === 'GBp';
+      const isGBp = currency === 'GBP' || currency === 'GBX' || currency === 'PENCE';
       const isEur = currency === 'EUR';
 
       // 1. Obter taxa cambial spot atual (para métricas gerais de mercado)
-      const currentSpotFx = await getFxRateToEur(isGBp ? 'GBP' : currency);
+      const currentSpotFx = await getFxRateToEur(isGBp ? 'GBP' : (currency === 'GBP' ? 'GBP' : currency));
 
       // 2. Se a moeda for diferente de EUR, obter o histórico cambial correspondente ao range e intervalo
       let historicalFxSeries: HistoricalFxSeries | null = null;
@@ -904,6 +904,14 @@ async function fetchChartFromYahoo(ticker: string, requestedRange: string = '1m'
 const app = express();
 const PORT = 3000;
 
+// Path normalization for serverless environments (e.g. Vercel)
+app.use((req, _res, next) => {
+  if (req.url && !req.url.startsWith('/api/') && !req.url.startsWith('/api')) {
+    req.url = '/api' + (req.url.startsWith('/') ? '' : '/') + req.url;
+  }
+  next();
+});
+
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
@@ -1032,14 +1040,16 @@ app.get('/api/quote/:ticker', async (req, res) => {
   try {
     const ticker = req.params.ticker.trim();
     const quote = await fetchFromYahoo(ticker);
-    const isGBp = quote.currency === 'GBP' || quote.currency === 'GBp';
+    const isGBp = quote.currency === 'GBP' || quote.currency === 'GBX' || quote.currency === 'PENCE';
     
-    const fxRate = await getFxRateToEur(isGBp ? 'GBP' : quote.currency);
+    const effectiveCurr = isGBp ? 'GBP' : quote.currency;
+    const fxRate = await getFxRateToEur(effectiveCurr);
     const nativePrice = quote.price;
     const priceInEur = isGBp ? (nativePrice / 100) * fxRate : nativePrice * fxRate;
 
     res.json({
       ...quote,
+      currency: isGBp ? 'GBP' : quote.currency,
       priceInEur: Number(priceInEur.toFixed(4)),
       fxRateToEur: Number(fxRate.toFixed(4)),
     });
@@ -1048,10 +1058,20 @@ app.get('/api/quote/:ticker', async (req, res) => {
   }
 });
 
-// 5. API Batch Quotes
-app.post('/api/quotes', async (req, res) => {
-  const tickers: string[] = req.body?.tickers || [];
-  if (!Array.isArray(tickers) || tickers.length === 0) {
+// 5. API Batch Quotes (supports both GET and POST)
+const handleBatchQuotes = async (req: express.Request, res: express.Response) => {
+  let tickers: string[] = [];
+  if (typeof req.query.symbols === 'string') {
+    tickers = req.query.symbols.split(',').map((s) => s.trim()).filter(Boolean);
+  } else if (typeof req.query.tickers === 'string') {
+    tickers = req.query.tickers.split(',').map((s) => s.trim()).filter(Boolean);
+  } else if (Array.isArray(req.body?.tickers)) {
+    tickers = req.body.tickers.map((s: any) => String(s).trim()).filter(Boolean);
+  } else if (Array.isArray(req.body?.symbols)) {
+    tickers = req.body.symbols.map((s: any) => String(s).trim()).filter(Boolean);
+  }
+
+  if (!tickers || tickers.length === 0) {
     return res.json({ quotes: {} });
   }
 
@@ -1062,7 +1082,10 @@ app.post('/api/quotes', async (req, res) => {
     console.error('Erro global na rota /api/quotes:', error);
     res.status(500).json({ error: error.message || 'Erro interno no servidor' });
   }
-});
+};
+
+app.get('/api/quotes', handleBatchQuotes);
+app.post('/api/quotes', handleBatchQuotes);
 
 // 6. API FX Rate
 app.get('/api/fx/:from', async (req, res) => {

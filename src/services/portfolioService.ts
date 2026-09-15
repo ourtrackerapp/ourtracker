@@ -76,26 +76,31 @@ export function invalidateClientQuotesCache(): void {
 export function findQuoteForTicker(quotes: Record<string, any>, rawTicker: string): any | null {
   if (!quotes || !rawTicker) return null;
   const t = rawTicker.trim().toUpperCase();
+
+  // 1. Direct match
   if (quotes[t]) return quotes[t];
 
-  const noSuffix = t.endsWith('.US')
-    ? t.replace(/\.US$/i, '')
-    : t.includes('.')
-    ? t.split('.')[0]
-    : t;
-  if (quotes[noSuffix]) return quotes[noSuffix];
+  // 2. Suffix matching for .US
+  if (t.endsWith('.US')) {
+    const noUs = t.replace(/\.US$/i, '');
+    if (quotes[noUs]) return quotes[noUs];
+  } else if (!t.includes('.')) {
+    const withUs = `${t}.US`;
+    if (quotes[withUs]) return quotes[withUs];
+  }
 
-  const withUs = `${noSuffix}.US`;
-  if (quotes[withUs]) return quotes[withUs];
-
-  // Match por varredura de chaves
+  // 3. Scan keys for exact match or prefix/extension match (e.g. SXR8.DE vs SXR8)
   const keys = Object.keys(quotes);
-  const foundKey = keys.find((k) => {
-    const kClean = k.trim().toUpperCase();
-    return kClean === t || kClean === noSuffix || kClean === withUs;
-  });
+  const foundExact = keys.find((k) => k.trim().toUpperCase() === t);
+  if (foundExact) return quotes[foundExact];
 
-  return foundKey ? quotes[foundKey] : null;
+  const foundPrefix = keys.find((k) => {
+    const kClean = k.trim().toUpperCase();
+    return kClean.startsWith(t + '.') || t.startsWith(kClean + '.');
+  });
+  if (foundPrefix) return quotes[foundPrefix];
+
+  return null;
 }
 
 // Cotações em tempo real com política: 5 min cache, forceRefresh para atualizar imediatamente
@@ -607,7 +612,7 @@ export function computePortfolio(
     //   aplica a taxa cambial (fxRateToEur) para não tratar USD/GBP como EUR.
     // - Ativos em GBP cotados em pence (GBp) são devidamente normalizados (/ 100).
     const isForeignCurrency = nativeCurrency !== 'EUR';
-    const isPence = nativeCurrency === 'GBP' && (quote?.currency === 'GBp' || (quote?.price && quote?.price > 500 && holding.ticker.endsWith('.L')));
+    const isPence = (quote?.currency === 'GBp' || quote?.currency === 'GBX' || quote?.currency === 'PENCE');
 
     let totalInvested = 0;
     purchases.forEach((p) => {

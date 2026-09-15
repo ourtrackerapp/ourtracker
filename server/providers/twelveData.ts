@@ -1,4 +1,4 @@
-import { RawProviderQuote } from './yahoo';
+import { RawProviderQuote } from './yahoo.js';
 
 const KEYS = [
   process.env.TWELVE_DATA_API_KEY_1 || 'c680e1388d9d40a28b1e2b3649aafefb',
@@ -29,7 +29,7 @@ export async function getTwelveDataQuote(ticker: string): Promise<RawProviderQuo
         searchTicker
       )}&apikey=${apiKey}`;
 
-      const res = await fetch(url);
+      const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
       if (res.status === 429) {
         // Rate limit, try next key
         continue;

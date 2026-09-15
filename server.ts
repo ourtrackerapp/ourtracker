@@ -1,8 +1,7 @@
 import express from 'express';
 import path from 'path';
-import { createServer as createViteServer } from 'vite';
-import { getExchangeRate, convertCurrency } from './serverFx';
-import { orchestrateQuotes } from './server/quoteOrchestrator';
+import { getExchangeRate } from './serverFx.js';
+import { orchestrateQuotes } from './server/quoteOrchestrator.js';
 
 interface CachedData<T> {
   data: T;
@@ -351,11 +350,12 @@ async function fetchFromYahoo(ticker: string) {
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
       Accept: 'application/json, text/plain, */*',
     };
-    const searchRes = await fetch(
+    const searchRes = await fetchWithTimeout(
       `https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(
         searchQuery
       )}&quotesCount=5&newsCount=0`,
-      { headers }
+      { headers },
+      4000
     );
     if (searchRes.ok) {
       const searchJson = await searchRes.json();

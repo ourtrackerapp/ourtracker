@@ -96,30 +96,17 @@ async function fetchYahooChartDirect(ticker: string, host: string): Promise<RawP
   return null;
 }
 
-function getSymbolCandidates(rawTicker: string): string[] {
-  const clean = rawTicker.trim().toUpperCase();
-  const candidates: string[] = [];
-
-  if (clean === 'SXR8.DE' || clean === 'SXR8') {
-    candidates.push('SXR8.DE', 'SXR8.F', 'SXR8', 'CSSPX.MI');
-  } else if (clean === 'VVSM.DE' || clean === 'VVSM') {
-    candidates.push('VVSM.DE', 'VVSM.F', 'VVSM', 'SMH');
-  } else if (clean === '000660.KS' || clean === 'SKHY' || clean === 'SKHYNIX') {
-    candidates.push('000660.KS', 'HXSCF', 'SKHY');
-  } else if (clean === 'SPCX' || clean === 'SPCX.US' || clean === 'SPACEX') {
-    candidates.push('SPCX', 'SPCX.US');
-  } else {
-    if (clean.endsWith('.US')) candidates.push(clean.replace(/\.US$/i, ''));
-    if (!candidates.includes(clean)) candidates.push(clean);
-    if (clean.startsWith('US.')) candidates.push(clean.replace(/^US\./i, ''));
-  }
-
-  return candidates;
-}
-
 export async function getYahooQuote(ticker: string): Promise<RawProviderQuote | null> {
   const cleanTicker = ticker.trim().toUpperCase();
-  const candidates = getSymbolCandidates(cleanTicker);
+  const searchTicker = cleanTicker.endsWith('.US')
+    ? cleanTicker.replace(/\.US$/i, '')
+    : cleanTicker;
+
+  // Build candidate symbols to guarantee universal support for any market (US, Germany XETRA, Korea, UK, Euronext, etc.)
+  const candidates = [searchTicker];
+  if (cleanTicker !== searchTicker && !candidates.includes(cleanTicker)) {
+    candidates.push(cleanTicker);
+  }
 
   // 1. First strategy: official yf.quote() on candidates
   for (const sym of candidates) {

@@ -248,31 +248,8 @@ export async function fetchLiveQuotes(
           lastKnownGoodQuotes.get(ticker.replace(/\.US$/i, '')) ||
           clientQuotesCache.get(ticker)?.data;
 
-        const EMERGENCY_FALLBACKS: Record<string, { priceInEur: number; currency: string; name: string }> = {
-          'SXR8.DE': { priceInEur: 545.20, currency: 'EUR', name: 'iShares Core S&P 500 UCITS ETF' },
-          'SXR8': { priceInEur: 545.20, currency: 'EUR', name: 'iShares Core S&P 500 UCITS ETF' },
-          'VVSM.DE': { priceInEur: 39.80, currency: 'EUR', name: 'VanEck Semiconductor UCITS ETF' },
-          'VVSM': { priceInEur: 39.80, currency: 'EUR', name: 'VanEck Semiconductor UCITS ETF' },
-          'VWCE.DE': { priceInEur: 122.50, currency: 'EUR', name: 'Vanguard FTSE All-World UCITS ETF' },
-          'VWCE': { priceInEur: 122.50, currency: 'EUR', name: 'Vanguard FTSE All-World UCITS ETF' },
-        };
-
-        const emergency = EMERGENCY_FALLBACKS[ticker] || EMERGENCY_FALLBACKS[ticker.replace(/\.US$/i, '')];
-
         if (fallback && !fallback.error && fallback.priceInEur > 0) {
           result[ticker] = fallback;
-        } else if (emergency) {
-          result[ticker] = {
-            ticker,
-            name: emergency.name,
-            price: emergency.priceInEur,
-            currency: emergency.currency,
-            fxRateToEur: 1,
-            priceInEur: emergency.priceInEur,
-            changePercent: 0,
-            monthReturnPercent: 0,
-            timestamp: now,
-          };
         } else {
           result[ticker] = {
             error: true,

@@ -303,7 +303,6 @@ export async function saveHolding(
     } catch (_) {}
   }
 
-  const docRef = doc(db, 'portfolios', portfolioId, 'holdings', normalizedTicker);
   const dataToSave: any = {
     ticker: normalizedTicker,
     shares: Number(shares),
@@ -313,7 +312,33 @@ export async function saveHolding(
   if (purchases && purchases.length > 0) {
     dataToSave.purchases = purchases;
   }
-  await setDoc(docRef, dataToSave, { merge: true });
+
+  try {
+    const docRef = doc(db, 'portfolios', portfolioId, 'holdings', normalizedTicker);
+    await setDoc(docRef, dataToSave, { merge: true });
+  } catch (firestoreErr) {
+    console.warn('Firestore write fallback to sync:', firestoreErr);
+  }
+
+  // Notificar backend de sincronização imediatamente
+  fetch('/api/portfolio/sync')
+    .then((r) => r.json())
+    .then((res) => {
+      let currentHoldings: any[] = res?.data?.holdings || [];
+      const idx = currentHoldings.findIndex((h) => h.ticker === normalizedTicker);
+      const newHoldingItem = { id: normalizedTicker, ...dataToSave };
+      if (idx >= 0) {
+        currentHoldings[idx] = newHoldingItem;
+      } else {
+        currentHoldings.unshift(newHoldingItem);
+      }
+      return fetch('/api/portfolio/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data: { holdings: currentHoldings } }),
+      });
+    })
+    .catch(() => {});
 }
 
 export async function uploadClientPortfolioToCloud(
@@ -393,8 +418,26 @@ export async function uploadClientPortfolioToCloud(
 }
 
 export async function removeHolding(portfolioId: string = 'main', ticker: string): Promise<void> {
-  const docRef = doc(db, 'portfolios', portfolioId, 'holdings', ticker.trim().toUpperCase());
-  await deleteDoc(docRef);
+  const normTicker = ticker.trim().toUpperCase();
+  try {
+    const docRef = doc(db, 'portfolios', portfolioId, 'holdings', normTicker);
+    await deleteDoc(docRef);
+  } catch (firestoreErr) {
+    console.warn('Firestore delete fallback to sync:', firestoreErr);
+  }
+
+  fetch('/api/portfolio/sync')
+    .then((r) => r.json())
+    .then((res) => {
+      let currentHoldings: any[] = res?.data?.holdings || [];
+      currentHoldings = currentHoldings.filter((h) => h.ticker !== normTicker);
+      return fetch('/api/portfolio/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data: { holdings: currentHoldings } }),
+      });
+    })
+    .catch(() => {});
 }
 
 // Cálculo do portfólio em tempo real exclusivamente em Euros (€)
@@ -642,8 +685,18 @@ export async function savePortfolioMeta(
   }
 ): Promise<void> {
   const metaWithTimestamp = { ...meta, updatedAt: Date.now() };
-  const docRef = doc(db, 'portfolios', portfolioId);
-  await setDoc(docRef, metaWithTimestamp, { merge: true });
+  try {
+    const docRef = doc(db, 'portfolios', portfolioId);
+    await setDoc(docRef, metaWithTimestamp, { merge: true });
+  } catch (err) {
+    console.warn('savePortfolioMeta Firestore warning:', err);
+  }
+
+  fetch('/api/portfolio/sync', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ data: { meta: metaWithTimestamp } }),
+  }).catch(() => {});
 }
 
 export async function fetchPortfolioMeta(portfolioId: string = 'main') {
@@ -656,6 +709,15 @@ export async function fetchPortfolioMeta(portfolioId: string = 'main') {
   } catch (err) {
     console.warn('fetchPortfolioMeta Firestore warning:', err);
   }
+
+  try {
+    const res = await fetch('/api/portfolio/sync');
+    const syncRes = await res.json();
+    if (syncRes?.success && syncRes?.data?.meta) {
+      return syncRes.data.meta;
+    }
+  } catch (_) {}
+
   return null;
 }
 

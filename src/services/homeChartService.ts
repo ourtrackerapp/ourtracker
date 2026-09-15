@@ -106,12 +106,36 @@ async function fetchTickerChart(ticker: string, apiPeriod: string): Promise<any[
   try {
     const baseUrl = typeof window !== 'undefined' ? '' : 'http://localhost:3000';
     const res = await fetch(`${baseUrl}/api/chart/${encodeURIComponent(ticker)}?range=${apiPeriod}`);
-    if (!res.ok) return [];
-    const data = await res.json();
-    return Array.isArray(data?.points) ? data.points : [];
-  } catch {
-    return [];
-  }
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data?.points) && data.points.length > 0) {
+        return data.points;
+      }
+    }
+  } catch {}
+
+  // Fallback direto em tempo real para o gráfico via Yahoo Finance Client
+  try {
+    const cleanSym = ticker.replace(/\.US$/i, '');
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(cleanSym)}?range=${encodeURIComponent(apiPeriod)}&interval=1d`;
+    const yRes = await fetch(url);
+    if (yRes.ok) {
+      const yData = await yRes.json();
+      const result = yData?.chart?.result?.[0];
+      const timestamps: number[] = result?.timestamp || [];
+      const closes: number[] = result?.indicators?.quote?.[0]?.close || [];
+      const points: any[] = [];
+      timestamps.forEach((t, i) => {
+        const c = closes[i];
+        if (typeof c === 'number' && !isNaN(c) && c > 0) {
+          points.push({ timestamp: t * 1000, close: c, closeEur: c });
+        }
+      });
+      if (points.length > 0) return points;
+    }
+  } catch {}
+
+  return [];
 }
 
 const CHART_CACHE_TTL_MS = 5 * 60 * 1000;

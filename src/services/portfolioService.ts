@@ -13,6 +13,7 @@ import {
 import { db } from '../firebase';
 import { HoldingDoc, PortfolioPosition, PurchaseRecord } from '../types';
 import { convertTickerToYahoo } from '../utils/yahooClient';
+import { fetchDirectRealtimeQuote } from './realtimeQuoteService';
 
 // High-contrast, maximally distinct color palette ensuring adjacent and overall colors are never identical or confusing
 export const DISTINCT_PALETTE = [
@@ -184,29 +185,75 @@ export async function fetchLiveQuotes(
       }
     });
 
+    // Para os tickers que ainda não têm cotação válida, tenta obter em direto via direct real-time fallback
+    const missingTickers = tickersToFetch.filter((t) => {
+      const q = result[t];
+      return !q || q.error || !q.priceInEur;
+    });
+
+    if (missingTickers.length > 0) {
+      await Promise.all(
+        missingTickers.map(async (ticker) => {
+          try {
+            const directQ = await fetchDirectRealtimeQuote(ticker);
+            if (directQ && directQ.priceInEur > 0) {
+              const noSuffix = ticker.replace(/\.US$/i, '');
+              const withUs = `${noSuffix}.US`;
+              clientQuotesCache.set(ticker, { data: directQ, timestamp: now });
+              clientQuotesCache.set(noSuffix, { data: directQ, timestamp: now });
+              clientQuotesCache.set(withUs, { data: directQ, timestamp: now });
+
+              lastKnownGoodQuotes.set(ticker, directQ);
+              lastKnownGoodQuotes.set(noSuffix, directQ);
+              lastKnownGoodQuotes.set(withUs, directQ);
+
+              result[ticker] = directQ;
+              result[noSuffix] = directQ;
+              result[withUs] = directQ;
+              hasSuccess = true;
+            }
+          } catch {}
+        })
+      );
+    }
+
     if (hasSuccess) {
       lastSuccessfulQuoteUpdate = now;
     }
 
     return result;
   } catch (err) {
-    console.warn('Erro ao obter cotações em tempo real:', err);
-    // Em caso de falha de rede temporária, recupera de imediato os lastKnownGoodQuotes
-    tickersToFetch.forEach((ticker) => {
-      const fallback =
-        lastKnownGoodQuotes.get(ticker) ||
-        lastKnownGoodQuotes.get(ticker.replace(/\.US$/i, '')) ||
-        clientQuotesCache.get(ticker)?.data;
+    console.warn('Erro na rota /api/quotes, a tentar fallback direto em tempo real:', err);
+    await Promise.all(
+      tickersToFetch.map(async (ticker) => {
+        try {
+          const directQ = await fetchDirectRealtimeQuote(ticker);
+          if (directQ && directQ.priceInEur > 0) {
+            const noSuffix = ticker.replace(/\.US$/i, '');
+            const withUs = `${noSuffix}.US`;
+            result[ticker] = directQ;
+            result[noSuffix] = directQ;
+            result[withUs] = directQ;
+            lastKnownGoodQuotes.set(ticker, directQ);
+            return;
+          }
+        } catch {}
 
-      if (fallback && !fallback.error && fallback.priceInEur > 0) {
-        result[ticker] = fallback;
-      } else {
-        result[ticker] = {
-          error: true,
-          errorMessage: 'Cotação indisponível',
-        };
-      }
-    });
+        const fallback =
+          lastKnownGoodQuotes.get(ticker) ||
+          lastKnownGoodQuotes.get(ticker.replace(/\.US$/i, '')) ||
+          clientQuotesCache.get(ticker)?.data;
+
+        if (fallback && !fallback.error && fallback.priceInEur > 0) {
+          result[ticker] = fallback;
+        } else {
+          result[ticker] = {
+            error: true,
+            errorMessage: 'Cotação indisponível',
+          };
+        }
+      })
+    );
     return result;
   }
 }

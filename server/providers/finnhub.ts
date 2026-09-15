@@ -1,4 +1,4 @@
-import { RawProviderQuote } from './yahoo';
+import { RawProviderQuote } from './yahoo.js';
 
 const KEYS = [
   process.env.FINNHUB_API_KEY_1 || 'dag9ggpr01quf8mtbus0dag9ggpr01quf8mtbusg',
@@ -29,7 +29,7 @@ export async function getFinnhubQuote(ticker: string): Promise<RawProviderQuote 
         searchTicker
       )}&token=${apiKey}`;
 
-      const res = await fetch(quoteUrl);
+      const res = await fetch(quoteUrl, { signal: AbortSignal.timeout(4000) });
       if (res.status === 429) {
         // Rate limit hit, try next key
         continue;
@@ -57,7 +57,7 @@ export async function getFinnhubQuote(ticker: string): Promise<RawProviderQuote 
         const profileUrl = `https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(
           searchTicker
         )}&token=${apiKey}`;
-        const profileRes = await fetch(profileUrl);
+        const profileRes = await fetch(profileUrl, { signal: AbortSignal.timeout(3000) });
         if (profileRes.ok) {
           const profileData = await profileRes.json();
           if (profileData.name) name = profileData.name;

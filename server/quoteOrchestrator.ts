@@ -1,10 +1,11 @@
 import YahooFinance from 'yahoo-finance2';
-import { getYahooQuote, RawProviderQuote } from './providers/yahoo';
-import { getTwelveDataQuote } from './providers/twelveData';
-import { getFinnhubQuote } from './providers/finnhub';
+import { getYahooQuote, RawProviderQuote, withTimeout } from './providers/yahoo.js';
+import { getTwelveDataQuote } from './providers/twelveData.js';
+import { getFinnhubQuote } from './providers/finnhub.js';
 
 const yf = new YahooFinance({
   validation: { logErrors: false },
+  suppressNotices: ['yahooSurvey'],
 });
 
 export interface StandardQuoteResponse {
@@ -41,11 +42,14 @@ async function resolveSymbolIfName(rawQuery: string): Promise<string> {
   }
 
   try {
-    const searchRes: any = await yf.search(clean, {
-      quotesCount: 5,
-      newsCount: 0,
-      enableFuzzyQuery: true,
-    });
+    const searchRes: any = await withTimeout(
+      yf.search(clean, {
+        quotesCount: 5,
+        newsCount: 0,
+        enableFuzzyQuery: true,
+      }),
+      4000
+    );
     const quotes = Array.isArray(searchRes?.quotes) ? searchRes.quotes : [];
     const firstSymbol = quotes.find((q: any) => q.symbol)?.symbol;
     if (firstSymbol) {

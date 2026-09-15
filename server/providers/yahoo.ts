@@ -11,7 +11,28 @@ export interface RawProviderQuote {
 
 const yf = new YahooFinance({
   validation: { logErrors: false },
+  suppressNotices: ['yahooSurvey'],
 });
+
+// Serverless functions have a hard execution limit; every upstream call must be bounded
+// so a single hanging provider cannot take down the whole batch.
+const PROVIDER_TIMEOUT_MS = 4000;
+
+export function withTimeout<T>(promise: Promise<T>, ms: number = PROVIDER_TIMEOUT_MS): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
 
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -37,6 +58,7 @@ async function fetchYahooChartDirect(ticker: string, host: string): Promise<RawP
           'Accept-Language': 'en-US,en;q=0.9',
           Referer: 'https://finance.yahoo.com',
         },
+        signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
       });
 
       if (!response.ok) continue;
@@ -111,7 +133,7 @@ export async function getYahooQuote(ticker: string): Promise<RawProviderQuote | 
   // 1. First strategy: official yf.quote() on candidates
   for (const sym of candidates) {
     try {
-      const quote: any = await yf.quote(sym);
+      const quote: any = await withTimeout(yf.quote(sym));
       if (quote) {
         const currency = (quote.currency || 'EUR').toUpperCase();
         const regularPrice =
@@ -157,7 +179,7 @@ export async function getYahooQuote(ticker: string): Promise<RawProviderQuote | 
   // 2. Second strategy: quoteSummary price module (essential for European ETFs like SXR8.DE, VWCE.DE)
   for (const sym of candidates) {
     try {
-      const summary: any = await yf.quoteSummary(sym, { modules: ['price'] });
+      const summary: any = await withTimeout(yf.quoteSummary(sym, { modules: ['price'] }));
       const priceModule = summary?.price;
       if (priceModule) {
         const regularPrice =

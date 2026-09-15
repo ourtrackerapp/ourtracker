@@ -1,4 +1,6 @@
-// Serviço de fallback direto em tempo real no cliente para Vercel e Browser
+// Serviço em tempo real: 1º Yahoo Finance -> 2º TwelveData -> 3º Finnhub
+// Conversão de Moedas: Gratuita (Frankfurter API / Open Exchange Rates)
+
 export interface DirectQuote {
   ticker: string;
   name?: string;
@@ -8,49 +10,60 @@ export interface DirectQuote {
   changePercent: number;
   monthReturnPercent: number;
   timestamp: number;
+  source: 'yahoo' | 'twelvedata' | 'finnhub';
   error?: boolean;
   errorMessage?: string;
 }
 
-// Obter taxa USD->EUR em tempo real de APIs públicas e abertas
+// Obter taxa cambial USD/EUR e outras moedas para EUR de forma 100% gratuita em tempo real
 let cachedUsdEurRate = 0.92;
 let lastRateFetch = 0;
 
-export async function getLiveUsdEurRate(): Promise<number> {
+export async function getLiveFxToEur(fromCurrency: string): Promise<number> {
+  const cleanFrom = fromCurrency.toUpperCase();
+  if (cleanFrom === 'EUR') return 1.0;
+
   const now = Date.now();
-  if (now - lastRateFetch < 5 * 60 * 1000 && cachedUsdEurRate > 0) {
+  if (cleanFrom === 'USD' && now - lastRateFetch < 2 * 60 * 1000 && cachedUsdEurRate > 0) {
     return cachedUsdEurRate;
   }
 
+  // 1. Frankfurter API (Banco Central Europeu - Oficial & Gratuito)
   try {
-    const res = await fetch('https://open.er-api.com/v6/latest/USD');
+    const res = await fetch(`https://api.frankfurter.app/latest?from=${cleanFrom}&to=EUR`);
     if (res.ok) {
       const data = await res.json();
       if (data?.rates?.EUR) {
-        cachedUsdEurRate = Number(data.rates.EUR);
-        lastRateFetch = now;
-        return cachedUsdEurRate;
+        const rate = Number(data.rates.EUR);
+        if (cleanFrom === 'USD') {
+          cachedUsdEurRate = rate;
+          lastRateFetch = now;
+        }
+        return rate;
       }
     }
   } catch {}
 
+  // 2. Open Exchange Rates aberto
   try {
-    const res2 = await fetch('https://api.frankfurter.app/latest?from=USD&to=EUR');
+    const res2 = await fetch(`https://open.er-api.com/v6/latest/${cleanFrom}`);
     if (res2.ok) {
       const data2 = await res2.json();
       if (data2?.rates?.EUR) {
-        cachedUsdEurRate = Number(data2.rates.EUR);
-        lastRateFetch = now;
-        return cachedUsdEurRate;
+        const rate = Number(data2.rates.EUR);
+        if (cleanFrom === 'USD') {
+          cachedUsdEurRate = rate;
+          lastRateFetch = now;
+        }
+        return rate;
       }
     }
   } catch {}
 
-  return cachedUsdEurRate;
+  return cleanFrom === 'USD' ? cachedUsdEurRate : 1.0;
 }
 
-// Converter símbolos para formato Yahoo padrão
-export function formatSymbolForQuery(rawTicker: string): string {
+export function formatSymbolForYahoo(rawTicker: string): string {
   const t = rawTicker.trim().toUpperCase();
   if (t === 'SXR8.DE') return 'SXR8.DE';
   if (t === 'VVSM.DE') return 'VVSM.DE';
@@ -58,52 +71,19 @@ export function formatSymbolForQuery(rawTicker: string): string {
   return t;
 }
 
-// Buscar cotação direta em tempo real via Yahoo Query CORS Proxy / Finnhub / CoinGecko
-export async function fetchDirectRealtimeQuote(ticker: string): Promise<DirectQuote | null> {
-  const cleanTicker = ticker.trim().toUpperCase();
-  const querySymbol = formatSymbolForQuery(cleanTicker);
-  const usdEurRate = await getLiveUsdEurRate();
-
-  // 1. Tentar Finnhub para ações dos EUA
-  const finnhubKey = 'cvi73f9r01qgcnd3vbh0cvi73f9r01qgcnd3vbhg';
-  if (!querySymbol.includes('.')) {
-    try {
-      const fhRes = await fetch(
-        `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(querySymbol)}&token=${finnhubKey}`
-      );
-      if (fhRes.ok) {
-        const fhData = await fhRes.json();
-        const currentPrice = Number(fhData.c);
-        if (currentPrice && currentPrice > 0) {
-          const changePercent = Number(fhData.dp || 0);
-          const priceInEur = currentPrice * usdEurRate;
-          return {
-            ticker: cleanTicker,
-            name: querySymbol,
-            price: currentPrice,
-            currency: 'USD',
-            priceInEur,
-            changePercent,
-            monthReturnPercent: changePercent,
-            timestamp: Date.now(),
-          };
-        }
-      }
-    } catch {}
-  }
-
-  // 2. Tentar proxies rápidos e abertos de Yahoo Finance Chart API
-  const yahooProxies = [
-    (sym: string) => `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?range=1mo&interval=1d`,
-    (sym: string) => `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?range=1mo&interval=1d`,
-    (sym: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(`https://query1.finance.yahoo.com/v8/finance/chart/${sym}?range=1mo&interval=1d`)}`,
+// 1. MOTOR PRINCIPAL: Yahoo Finance em Tempo Real
+async function fetchFromYahoo(ticker: string): Promise<DirectQuote | null> {
+  const yahooSymbol = formatSymbolForYahoo(ticker);
+  const yahooUrls = [
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?range=1mo&interval=1d`,
+    `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?range=1mo&interval=1d`,
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(`https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?range=1mo&interval=1d`)}`,
   ];
 
-  for (const proxyGen of yahooProxies) {
+  for (const url of yahooUrls) {
     try {
-      const url = proxyGen(querySymbol);
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 4000);
+      const timeoutId = setTimeout(() => controller.abort(), 3500);
       const res = await fetch(url, { signal: controller.signal });
       clearTimeout(timeoutId);
 
@@ -122,13 +102,9 @@ export async function fetchDirectRealtimeQuote(ticker: string): Promise<DirectQu
 
       if (!regularPrice || regularPrice <= 0) continue;
 
-      const currency = (meta.currency || (querySymbol.endsWith('.DE') ? 'EUR' : 'USD')).toUpperCase();
-      let priceInEur = regularPrice;
-      if (currency === 'USD') {
-        priceInEur = regularPrice * usdEurRate;
-      } else if (currency !== 'EUR') {
-        priceInEur = regularPrice * usdEurRate;
-      }
+      const currency = (meta.currency || (yahooSymbol.endsWith('.DE') ? 'EUR' : 'USD')).toUpperCase();
+      const fxRate = await getLiveFxToEur(currency);
+      const priceInEur = regularPrice * fxRate;
 
       let changePercent = 0;
       const prevClose = Number(meta.chartPreviousClose || meta.previousClose);
@@ -143,17 +119,108 @@ export async function fetchDirectRealtimeQuote(ticker: string): Promise<DirectQu
       }
 
       return {
-        ticker: cleanTicker,
-        name: meta.shortName || meta.longName || cleanTicker,
+        ticker: ticker.toUpperCase(),
+        name: meta.shortName || meta.longName || yahooSymbol,
         price: regularPrice,
         currency,
         priceInEur,
         changePercent,
         monthReturnPercent,
         timestamp: Date.now(),
+        source: 'yahoo',
       };
     } catch {}
   }
+  return null;
+}
+
+// 2. MOTOR SECUNDÁRIO: TwelveData em Tempo Real
+const TWELVE_KEYS = [
+  'c680e1388d9d40a28b1e2b3649aafefb',
+  'bc26ad2a1fbd43448e2c6c75b920cf79',
+];
+
+async function fetchFromTwelveData(ticker: string): Promise<DirectQuote | null> {
+  const cleanTicker = ticker.replace(/\.US$/i, '').toUpperCase();
+  for (const key of TWELVE_KEYS) {
+    try {
+      const url = `https://api.twelvedata.com/quote?symbol=${encodeURIComponent(cleanTicker)}&apikey=${key}`;
+      const res = await fetch(url);
+      if (!res.ok) continue;
+      const data = await res.json();
+      if (data.status === 'error' || data.code === 429) continue;
+
+      const price = parseFloat(data.close || data.price || data.previous_close);
+      if (isNaN(price) || price <= 0) continue;
+
+      const currency = (data.currency || 'USD').toUpperCase();
+      const fxRate = await getLiveFxToEur(currency);
+      const priceInEur = price * fxRate;
+      const changePercent = data.percent_change ? parseFloat(data.percent_change) : 0;
+
+      return {
+        ticker: ticker.toUpperCase(),
+        name: data.name || cleanTicker,
+        price,
+        currency,
+        priceInEur,
+        changePercent,
+        monthReturnPercent: changePercent,
+        timestamp: Date.now(),
+        source: 'twelvedata',
+      };
+    } catch {}
+  }
+  return null;
+}
+
+// 3. MOTOR TERCIÁRIO: Finnhub em Tempo Real
+async function fetchFromFinnhub(ticker: string): Promise<DirectQuote | null> {
+  const finnhubKey = 'cvi73f9r01qgcnd3vbh0cvi73f9r01qgcnd3vbhg';
+  const cleanTicker = ticker.replace(/\.US$/i, '').toUpperCase();
+  if (cleanTicker.includes('.')) return null; // Finnhub gratuito suporta US
+
+  try {
+    const fhRes = await fetch(
+      `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(cleanTicker)}&token=${finnhubKey}`
+    );
+    if (!fhRes.ok) return null;
+    const fhData = await fhRes.json();
+    const currentPrice = Number(fhData.c);
+    if (!currentPrice || currentPrice <= 0) return null;
+
+    const fxRate = await getLiveFxToEur('USD');
+    const changePercent = Number(fhData.dp || 0);
+
+    return {
+      ticker: ticker.toUpperCase(),
+      name: cleanTicker,
+      price: currentPrice,
+      currency: 'USD',
+      priceInEur: currentPrice * fxRate,
+      changePercent,
+      monthReturnPercent: changePercent,
+      timestamp: Date.now(),
+      source: 'finnhub',
+    };
+  } catch {
+    return null;
+  }
+}
+
+// Orquestrador de cotações em tempo real: Yahoo -> TwelveData -> Finnhub
+export async function fetchDirectRealtimeQuote(ticker: string): Promise<DirectQuote | null> {
+  // 1º Prioridade: Yahoo Finance
+  const yahooQuote = await fetchFromYahoo(ticker);
+  if (yahooQuote && yahooQuote.priceInEur > 0) return yahooQuote;
+
+  // 2º Prioridade: TwelveData
+  const tdQuote = await fetchFromTwelveData(ticker);
+  if (tdQuote && tdQuote.priceInEur > 0) return tdQuote;
+
+  // 3º Prioridade: Finnhub
+  const fhQuote = await fetchFromFinnhub(ticker);
+  if (fhQuote && fhQuote.priceInEur > 0) return fhQuote;
 
   return null;
 }

@@ -1,0 +1,6 @@
+{
+  "name": "OurTracker",
+  "description": "Portfólio de investimentos e alocação de ativos com sincronização em tempo real.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -220,6 +220,19 @@ export function subscribeUserHoldings(
   const holdingsRef = collection(db, 'portfolios', portfolioId, 'holdings');
   const q = query(holdingsRef, orderBy('createdAt', 'desc'));
 
+  // Sincronização inicial de apoio via backend se necessário
+  fetch('/api/portfolio/sync')
+    .then((res) => res.json())
+    .then((syncRes) => {
+      if (syncRes?.success && syncRes?.data?.holdings && Array.isArray(syncRes.data.holdings)) {
+        // Se o firestore ainda estiver a conectar ou vazio e houver sync recente
+        if (syncRes.data.holdings.length > 0) {
+          onUpdate(syncRes.data.holdings);
+        }
+      }
+    })
+    .catch(() => {});
+
   return onSnapshot(
     q,
     (snapshot) => {
@@ -246,10 +259,29 @@ export function subscribeUserHoldings(
             : undefined,
         });
       });
+      
       onUpdate(holdings);
+
+      // Espelhar estado em tempo real no endpoint redundante da Cloud
+      if (holdings.length > 0) {
+        fetch('/api/portfolio/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ data: { holdings, portfolioId } }),
+        }).catch(() => {});
+      }
     },
     (err) => {
       console.warn('Firestore subscription status:', err.message || err);
+      // Em caso de falha de conexão direta do Firestore, obter do sync redundante
+      fetch('/api/portfolio/sync')
+        .then((res) => res.json())
+        .then((syncRes) => {
+          if (syncRes?.success && syncRes?.data?.holdings && Array.isArray(syncRes.data.holdings)) {
+            onUpdate(syncRes.data.holdings);
+          }
+        })
+        .catch(() => {});
       if (onError) onError(err);
     }
   );

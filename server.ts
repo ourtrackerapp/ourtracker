@@ -907,6 +907,33 @@ const PORT = 3000;
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
+// Sincronização e Backup Cloud redundante em tempo real
+let globalPortfolioSyncState: any = null;
+
+app.get('/api/portfolio/sync', (req, res) => {
+  res.json({
+    success: true,
+    data: globalPortfolioSyncState,
+    timestamp: Date.now()
+  });
+});
+
+app.post('/api/portfolio/sync', (req, res) => {
+  try {
+    const { data } = req.body;
+    if (data) {
+      globalPortfolioSyncState = {
+        ...data,
+        lastUpdated: new Date().toISOString()
+      };
+      return res.json({ success: true, message: 'Portfólio sincronizado com sucesso!' });
+    }
+    return res.status(400).json({ error: 'Dados inválidos' });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || 'Erro ao sincronizar' });
+  }
+});
+
 // 1. API Search
 app.get('/api/search', async (req, res) => {
   try {

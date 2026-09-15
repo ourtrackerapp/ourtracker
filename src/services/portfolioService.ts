@@ -185,7 +185,7 @@ export async function fetchLiveQuotes(
       }
     });
 
-    // Para os tickers que ainda não têm cotação válida, tenta obter em direto via direct real-time fallback
+    // Para os tickers que ainda não têm cotação válida, tenta obter em direto via direct real-time fallback com escalonamento (stagger) para não saturar
     const missingTickers = tickersToFetch.filter((t) => {
       const q = result[t];
       return !q || q.error || !q.priceInEur;
@@ -193,7 +193,11 @@ export async function fetchLiveQuotes(
 
     if (missingTickers.length > 0) {
       await Promise.all(
-        missingTickers.map(async (ticker) => {
+        missingTickers.map(async (ticker, idx) => {
+          // Espaçamento de 40ms entre cada chamada para evitar detecção de flood
+          if (idx > 0) {
+            await new Promise((r) => setTimeout(r, idx * 40));
+          }
           try {
             const directQ = await fetchDirectRealtimeQuote(ticker);
             if (directQ && directQ.priceInEur > 0) {

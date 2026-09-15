@@ -63,10 +63,13 @@ export async function getLiveFxToEur(fromCurrency: string): Promise<number> {
   return cleanFrom === 'USD' ? cachedUsdEurRate : 1.0;
 }
 
+// Símbolos especiais ou substitutos conhecidos
 export function formatSymbolForYahoo(rawTicker: string): string {
   const t = rawTicker.trim().toUpperCase();
-  if (t === 'SXR8.DE') return 'SXR8.DE';
-  if (t === 'VVSM.DE') return 'VVSM.DE';
+  if (t === 'SXR8.DE' || t === 'SXR8') return 'SXR8.DE';
+  if (t === 'VVSM.DE' || t === 'VVSM') return 'VVSM.DE';
+  if (t === 'SPCX' || t === 'SPCX.US' || t === 'SPACEX') return 'SPCX';
+  if (t === '000660.KS' || t === 'SKHY.US' || t === 'SKHYNIX') return '000660.KS';
   if (t.endsWith('.US')) return t.replace(/\.US$/i, '');
   return t;
 }
@@ -74,62 +77,68 @@ export function formatSymbolForYahoo(rawTicker: string): string {
 // 1. MOTOR PRINCIPAL: Yahoo Finance em Tempo Real
 async function fetchFromYahoo(ticker: string): Promise<DirectQuote | null> {
   const yahooSymbol = formatSymbolForYahoo(ticker);
-  const yahooUrls = [
-    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?range=1mo&interval=1d`,
-    `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?range=1mo&interval=1d`,
-    `https://api.allorigins.win/raw?url=${encodeURIComponent(`https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?range=1mo&interval=1d`)}`,
-  ];
+  const candidateSymbols = [yahooSymbol];
+  if (yahooSymbol === '000660.KS') candidateSymbols.push('HXSCF');
+  if (yahooSymbol.endsWith('.DE')) candidateSymbols.push(yahooSymbol.replace(/\.DE$/i, ''));
 
-  for (const url of yahooUrls) {
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 3500);
-      const res = await fetch(url, { signal: controller.signal });
-      clearTimeout(timeoutId);
+  for (const sym of candidateSymbols) {
+    const yahooUrls = [
+      `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?range=1mo&interval=1d&includePrePost=false`,
+      `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?range=1mo&interval=1d&includePrePost=false`,
+      `https://api.allorigins.win/raw?url=${encodeURIComponent(`https://query1.finance.yahoo.com/v8/finance/chart/${sym}?range=1mo&interval=1d`)}`,
+    ];
 
-      if (!res.ok) continue;
-      const data = await res.json();
-      const meta = data?.chart?.result?.[0]?.meta;
-      if (!meta) continue;
+    for (const url of yahooUrls) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3500);
+        const res = await fetch(url, { signal: controller.signal });
+        clearTimeout(timeoutId);
 
-      let regularPrice = Number(meta.regularMarketPrice ?? meta.chartPreviousClose ?? meta.previousClose);
-      const closes: number[] = data?.chart?.result?.[0]?.indicators?.quote?.[0]?.close || [];
-      const validCloses = closes.filter((c) => typeof c === 'number' && !isNaN(c) && c > 0);
+        if (!res.ok) continue;
+        const data = await res.json();
+        const meta = data?.chart?.result?.[0]?.meta;
+        if (!meta) continue;
 
-      if ((!regularPrice || regularPrice <= 0) && validCloses.length > 0) {
-        regularPrice = validCloses[validCloses.length - 1];
-      }
+        let regularPrice = Number(meta.regularMarketPrice ?? meta.chartPreviousClose ?? meta.previousClose);
+        const closes: number[] = data?.chart?.result?.[0]?.indicators?.quote?.[0]?.close || [];
+        const validCloses = closes.filter((c) => typeof c === 'number' && !isNaN(c) && c > 0);
 
-      if (!regularPrice || regularPrice <= 0) continue;
+        if ((!regularPrice || regularPrice <= 0) && validCloses.length > 0) {
+          regularPrice = validCloses[validCloses.length - 1];
+        }
 
-      const currency = (meta.currency || (yahooSymbol.endsWith('.DE') ? 'EUR' : 'USD')).toUpperCase();
-      const fxRate = await getLiveFxToEur(currency);
-      const priceInEur = regularPrice * fxRate;
+        if (!regularPrice || regularPrice <= 0) continue;
 
-      let changePercent = 0;
-      const prevClose = Number(meta.chartPreviousClose || meta.previousClose);
-      if (prevClose && prevClose > 0) {
-        changePercent = Number((((regularPrice - prevClose) / prevClose) * 100).toFixed(2));
-      }
+        const currency = (meta.currency || (sym.endsWith('.DE') ? 'EUR' : sym.endsWith('.KS') ? 'KRW' : 'USD')).toUpperCase();
+        const fxRate = await getLiveFxToEur(currency);
+        const priceInEur = regularPrice * fxRate;
 
-      let monthReturnPercent = changePercent;
-      if (validCloses.length > 1) {
-        const firstPrice = validCloses[0];
-        monthReturnPercent = Number((((regularPrice - firstPrice) / firstPrice) * 100).toFixed(2));
-      }
+        let changePercent = 0;
+        const prevClose = Number(meta.chartPreviousClose || meta.previousClose);
+        if (prevClose && prevClose > 0) {
+          changePercent = Number((((regularPrice - prevClose) / prevClose) * 100).toFixed(2));
+        }
 
-      return {
-        ticker: ticker.toUpperCase(),
-        name: meta.shortName || meta.longName || yahooSymbol,
-        price: regularPrice,
-        currency,
-        priceInEur,
-        changePercent,
-        monthReturnPercent,
-        timestamp: Date.now(),
-        source: 'yahoo',
-      };
-    } catch {}
+        let monthReturnPercent = changePercent;
+        if (validCloses.length > 1) {
+          const firstPrice = validCloses[0];
+          monthReturnPercent = Number((((regularPrice - firstPrice) / firstPrice) * 100).toFixed(2));
+        }
+
+        return {
+          ticker: ticker.toUpperCase(),
+          name: meta.shortName || meta.longName || sym,
+          price: regularPrice,
+          currency,
+          priceInEur,
+          changePercent,
+          monthReturnPercent,
+          timestamp: Date.now(),
+          source: 'yahoo',
+        };
+      } catch {}
+    }
   }
   return null;
 }

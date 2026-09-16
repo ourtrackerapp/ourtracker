@@ -1,0 +1,10 @@
+import { initializeApp } from 'firebase/app';
+import { getFirestore, collection, getDocs, doc, getDoc } from 'firebase/firestore';
+import cfg from '/vercel/share/v0-project/firebase-applet-config.json' with { type: 'json' };
+const app = initializeApp({ apiKey: cfg.apiKey, authDomain: cfg.authDomain, projectId: cfg.projectId, appId: cfg.appId });
+const db = cfg.firestoreDatabaseId ? getFirestore(app, cfg.firestoreDatabaseId) : getFirestore(app);
+const meta = await getDoc(doc(db, 'portfolios', 'main'));
+console.log('META:', JSON.stringify(meta.data(), null, 1));
+const snap = await getDocs(collection(db, 'portfolios', 'main', 'holdings'));
+snap.forEach(d => { const x = d.data(); console.log(d.id, x.shares, JSON.stringify((x.purchases||[]).map((p:any)=>({d:new Date(p.date).toISOString().slice(0,10), sh:p.shares, px:p.price, pe:p.priceEur, cost:p.totalCostEur, cur:p.currency})))); });
+process.exit(0);

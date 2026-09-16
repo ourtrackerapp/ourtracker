@@ -1,7 +1,7 @@
 import express from 'express';
 import path from 'path';
 import { getExchangeRate } from './serverFx.js';
-import { orchestrateQuotes } from './server/quoteOrchestrator.js';
+import { orchestrateQuotes, fetchSingleQuoteWithFallback } from './server/quoteOrchestrator.js';
 
 interface CachedData<T> {
   data: T;
@@ -30,13 +30,15 @@ const CHART_RANGE_CONFIG: Record<string, { range: string; interval: string }> = 
   '1d': { range: '1d', interval: '30m' },
   '1s': { range: '5d', interval: '1h' },
   '1w': { range: '5d', interval: '1h' },
-  '1m': { range: '1mo', interval: '1h' },
+  '5d': { range: '5d', interval: '1h' },
+  '1m': { range: '1mo', interval: '1d' },
   '3m': { range: '3mo', interval: '1d' },
-  '6m': { range: '6mo', interval: '1wk' },
-  '1y': { range: '1y', interval: '1mo' },
-  '1a': { range: '1y', interval: '1mo' },
-  'max': { range: 'max', interval: '1mo' },
-  'tudo': { range: 'max', interval: '1mo' },
+  '6m': { range: '6mo', interval: '1d' },
+  'ytd': { range: 'ytd', interval: '1d' },
+  '1y': { range: '1y', interval: '1d' },
+  '1a': { range: '1y', interval: '1d' },
+  'max': { range: '10y', interval: '1d' },
+  'tudo': { range: '10y', interval: '1d' },
 };
 
 async function getFxRateToEur(fromCurrency: string): Promise<number> {
@@ -293,6 +295,34 @@ async function fetchSingleYahooSymbol(symbol: string) {
         if (monthBase && monthBase > 0) {
           monthReturnPercent = ((Number(price) - monthBase) / monthBase) * 100;
         }
+
+        // Variação de 1 semana (aproximadamente 5 sessões de negociação anteriores)
+        const validCloses = closes.filter((c) => typeof c === 'number' && !isNaN(c) && c > 0);
+        let weekReturnPercent = Number(changePercent);
+        if (validCloses.length > 5) {
+          const weekPrice = validCloses[validCloses.length - 6];
+          if (weekPrice && weekPrice > 0) {
+            weekReturnPercent = Number((((Number(price) - weekPrice) / weekPrice) * 100).toFixed(2));
+          }
+        } else if (validCloses.length > 1) {
+          const weekPrice = validCloses[0];
+          if (weekPrice && weekPrice > 0) {
+            weekReturnPercent = Number((((Number(price) - weekPrice) / weekPrice) * 100).toFixed(2));
+          }
+        }
+
+        return {
+          symbol: meta.symbol || symbol,
+          name: meta.shortName || meta.longName || meta.symbol || symbol,
+          currency: (meta.currency || 'USD').toUpperCase(),
+          price: Number(price),
+          change: Number(change),
+          changePercent: Number(changePercent),
+          weekReturnPercent: isNaN(weekReturnPercent) ? Number(changePercent) : weekReturnPercent,
+          monthReturnPercent: Number(monthReturnPercent.toFixed(2)),
+          previousClose: Number(previousClose),
+          timestamp: Date.now(),
+        };
       }
 
       return {
@@ -302,6 +332,7 @@ async function fetchSingleYahooSymbol(symbol: string) {
         price: Number(price),
         change: Number(change),
         changePercent: Number(changePercent),
+        weekReturnPercent: Number(changePercent),
         monthReturnPercent: Number(monthReturnPercent.toFixed(2)),
         previousClose: Number(previousClose),
         timestamp: Date.now(),
@@ -726,6 +757,8 @@ async function fetchChartFromYahoo(ticker: string, requestedRange: string = '1m'
         targetStartDate.setMonth(targetStartDate.getMonth() - 3);
       } else if (cleanReqRange === '6m') {
         targetStartDate.setMonth(targetStartDate.getMonth() - 6);
+      } else if (cleanReqRange === 'ytd') {
+        targetStartDate = new Date(endDate.getFullYear(), 0, 1);
       } else if (cleanReqRange === '1y') {
         targetStartDate.setFullYear(targetStartDate.getFullYear() - 1);
       } else {
@@ -905,12 +938,14 @@ const app = express();
 const PORT = 3000;
 
 // Path normalization for serverless environments (e.g. Vercel)
-app.use((req, _res, next) => {
-  if (req.url && !req.url.startsWith('/api/') && !req.url.startsWith('/api')) {
-    req.url = '/api' + (req.url.startsWith('/') ? '' : '/') + req.url;
-  }
-  next();
-});
+if (process.env.VERCEL) {
+  app.use((req, _res, next) => {
+    if (req.url && !req.url.startsWith('/api/') && !req.url.startsWith('/api')) {
+      req.url = '/api' + (req.url.startsWith('/') ? '' : '/') + req.url;
+    }
+    next();
+  });
+}
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
@@ -1039,20 +1074,11 @@ app.get('/api/chart/:ticker', async (req, res) => {
 app.get('/api/quote/:ticker', async (req, res) => {
   try {
     const ticker = req.params.ticker.trim();
-    const quote = await fetchFromYahoo(ticker);
-    const isGBp = quote.currency === 'GBP' || quote.currency === 'GBX' || quote.currency === 'PENCE';
-    
-    const effectiveCurr = isGBp ? 'GBP' : quote.currency;
-    const fxRate = await getFxRateToEur(effectiveCurr);
-    const nativePrice = quote.price;
-    const priceInEur = isGBp ? (nativePrice / 100) * fxRate : nativePrice * fxRate;
-
-    res.json({
-      ...quote,
-      currency: isGBp ? 'GBP' : quote.currency,
-      priceInEur: Number(priceInEur.toFixed(4)),
-      fxRateToEur: Number(fxRate.toFixed(4)),
-    });
+    const quote = await fetchSingleQuoteWithFallback(ticker, getFxRateToEur);
+    if (quote.error) {
+      return res.status(404).json({ error: quote.errorMessage || 'Cotação indisponível' });
+    }
+    res.json(quote);
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to fetch quote' });
   }

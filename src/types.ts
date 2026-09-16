@@ -33,8 +33,16 @@ export interface PortfolioPosition {
   profitEur?: number; // value - totalInvested in EUR (undefined if quote error)
   allocationPercent: number;
   changePercent?: number;
+  changeEur?: number;
+  weekReturnPercent?: number;
+  weekReturnEur?: number;
   monthReturnPercent?: number;
+  monthReturnEur?: number;
+  threeMonthReturnPercent?: number;
+  threeMonthReturnEur?: number;
+  targetPrice?: number;
   totalReturnPercent?: number; // strictly derived in runtime: (profitEur / totalInvested) * 100
+  firstPurchaseReturnPercent?: number; // return since the first purchase price
   firstPurchaseDate?: string; // ISO or date string of oldest valid purchase
   firstPurchaseTimestamp?: number; // timestamp in ms of oldest valid purchase
   color: string;

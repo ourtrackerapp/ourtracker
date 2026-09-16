@@ -8,6 +8,7 @@ import { HomeTab } from './components/HomeTab';
 import { SettingsTab } from './components/SettingsTab';
 import { ContributionCalculatorModal } from './components/ContributionCalculatorModal';
 import { StockChartModal } from './components/StockChartModal';
+import { LoadingScreen } from './components/LoadingScreen';
 import { HoldingDoc, PortfolioPosition, TabType } from './types';
 import {
   subscribeUserHoldings,
@@ -26,6 +27,7 @@ export default function App() {
   const [holdings, setHoldings] = useState<HoldingDoc[]>([]);
   const [quotes, setQuotes] = useState<Record<string, any>>({});
   const [resetSettingsSignal, setResetSettingsSignal] = useState<number>(0);
+  const [isInitializing, setIsInitializing] = useState<boolean>(true);
 
   // Ref to always access latest holdings inside stable timer callbacks
   const holdingsRef = useRef<HoldingDoc[]>([]);
@@ -39,9 +41,13 @@ export default function App() {
       'main',
       (updatedHoldings) => {
         setHoldings(updatedHoldings);
+        if (updatedHoldings.length === 0) {
+          setIsInitializing(false);
+        }
       },
       (error) => {
         console.warn('Erro na subscrição de holdings:', error);
+        setIsInitializing(false);
       }
     );
 
@@ -53,10 +59,14 @@ export default function App() {
   // Central quote fetcher
   const refreshQuotes = useCallback(async (force: boolean = false) => {
     const currentHoldings = holdingsRef.current;
-    if (currentHoldings.length === 0) return;
+    if (currentHoldings.length === 0) {
+      setIsInitializing(false);
+      return;
+    }
     const tickers = currentHoldings.map((h) => h.ticker);
     const fetchedQuotes = await fetchLiveQuotes(tickers, force);
     setQuotes((prev) => ({ ...prev, ...fetchedQuotes }));
+    setIsInitializing(false);
   }, []);
 
   // Initial quote fetch and fetch on holdings changes
@@ -136,6 +146,10 @@ export default function App() {
       refreshQuotes(true);
     }
   };
+
+  if (isInitializing) {
+    return <LoadingScreen />;
+  }
 
   return (
     <div className="flex flex-col min-h-screen bg-white text-slate-900 select-none pb-24">

@@ -16,7 +16,10 @@ export interface StandardQuoteResponse {
   fxRateToEur: number;
   priceInEur: number;
   changePercent: number;
+  weekReturnPercent?: number;
   monthReturnPercent: number;
+  threeMonthReturnPercent?: number;
+  targetPrice?: number;
   timestamp: number;
   source?: string;
   error?: boolean;
@@ -173,7 +176,10 @@ export async function fetchSingleQuoteWithFallback(
     fxRateToEur,
     priceInEur,
     changePercent: rawQuote.changePercent ?? 0,
-    monthReturnPercent: rawQuote.monthReturnPercent ?? rawQuote.changePercent ?? 0,
+    weekReturnPercent: rawQuote.weekReturnPercent,
+    monthReturnPercent: rawQuote.monthReturnPercent,
+    threeMonthReturnPercent: rawQuote.threeMonthReturnPercent,
+    targetPrice: rawQuote.targetPrice,
     timestamp: now,
     source: rawQuote.source,
   };

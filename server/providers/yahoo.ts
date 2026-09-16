@@ -5,7 +5,10 @@ export interface RawProviderQuote {
   currency: string;
   name?: string;
   changePercent?: number;
+  weekReturnPercent?: number;
   monthReturnPercent?: number;
+  threeMonthReturnPercent?: number;
+  targetPrice?: number;
   source: 'yahoo' | 'twelvedata' | 'finnhub';
 }
 
@@ -118,6 +121,79 @@ async function fetchYahooChartDirect(ticker: string, host: string): Promise<RawP
   return null;
 }
 
+// Cache for ticker returns (10 minutes TTL)
+const returnsCache = new Map<string, { data: { weekReturn?: number; monthReturn?: number; threeMonthReturn?: number }; timestamp: number }>();
+
+async function fetchReturnsForTicker(ticker: string): Promise<{
+  weekReturn?: number;
+  monthReturn?: number;
+  threeMonthReturn?: number;
+}> {
+  const cleanSym = ticker.replace(/\.US$/i, '').toUpperCase();
+  const cached = returnsCache.get(cleanSym);
+  if (cached && Date.now() - cached.timestamp < 10 * 60 * 1000) {
+    return cached.data;
+  }
+
+  const candidateSymbols = [cleanSym];
+  if (cleanSym.endsWith('.DE')) {
+    candidateSymbols.push(cleanSym);
+  } else if (!cleanSym.includes('.')) {
+    candidateSymbols.push(`${cleanSym}`);
+  }
+
+  for (const sym of candidateSymbols) {
+    try {
+      const d = new Date();
+      d.setDate(d.getDate() - 110);
+      const period1 = d.toISOString().slice(0, 10);
+
+      const res: any = await withTimeout(
+        yf.chart(sym, { period1, interval: '1d' }),
+        3500
+      );
+
+      const quotes = (res?.quotes || []).filter(
+        (q: any) => typeof q.close === 'number' && !isNaN(q.close) && q.close > 0
+      );
+
+      if (quotes.length < 2) continue;
+
+      const currentPrice = Number(res?.meta?.regularMarketPrice || quotes[quotes.length - 1].close);
+      const nowMs = Date.now();
+      const target1w = nowMs - 7 * 86400000;
+      const target1m = nowMs - 30 * 86400000;
+      const target3m = nowMs - 90 * 86400000;
+
+      const findCloseAtOrBefore = (targetMs: number) => {
+        for (let i = quotes.length - 1; i >= 0; i--) {
+          const qTime = new Date(quotes[i].date).getTime();
+          if (qTime <= targetMs) {
+            return quotes[i].close;
+          }
+        }
+        return quotes[0]?.close;
+      };
+
+      const p1w = findCloseAtOrBefore(target1w);
+      const p1m = findCloseAtOrBefore(target1m);
+      const p3m = findCloseAtOrBefore(target3m);
+
+      const weekReturn = p1w > 0 ? Number((((currentPrice - p1w) / p1w) * 100).toFixed(2)) : undefined;
+      const monthReturn = p1m > 0 ? Number((((currentPrice - p1m) / p1m) * 100).toFixed(2)) : undefined;
+      const threeMonthReturn = p3m > 0 ? Number((((currentPrice - p3m) / p3m) * 100).toFixed(2)) : undefined;
+
+      const result = { weekReturn, monthReturn, threeMonthReturn };
+      returnsCache.set(cleanSym, { data: result, timestamp: Date.now() });
+      return result;
+    } catch {
+      // Continue to next symbol
+    }
+  }
+
+  return {};
+}
+
 export async function getYahooQuote(ticker: string): Promise<RawProviderQuote | null> {
   const cleanTicker = ticker.trim().toUpperCase();
   const searchTicker = cleanTicker.endsWith('.US')
@@ -133,27 +209,35 @@ export async function getYahooQuote(ticker: string): Promise<RawProviderQuote | 
   // 1. First strategy: official yf.quote() on candidates
   for (const sym of candidates) {
     try {
-      const quote: any = await withTimeout(yf.quote(sym));
-      if (quote) {
-        const currency = (quote.currency || 'EUR').toUpperCase();
+      const [quote, summary, returns]: any = await Promise.allSettled([
+        withTimeout(yf.quote(sym)),
+        withTimeout(yf.quoteSummary(sym, { modules: ['financialData'] })),
+        fetchReturnsForTicker(sym),
+      ]);
+      const quoteData = quote.status === 'fulfilled' ? quote.value : null;
+      const targetPrice = summary.status === 'fulfilled' ? summary.value?.financialData?.targetMeanPrice : undefined;
+      const returnsData = returns.status === 'fulfilled' ? returns.value : {};
+
+      if (quoteData) {
+        const currency = (quoteData.currency || 'EUR').toUpperCase();
         const regularPrice =
-          quote.regularMarketPrice ??
-          quote.postMarketPrice ??
-          quote.preMarketPrice ??
-          quote.regularMarketPreviousClose ??
-          quote.previousClose;
+          quoteData.regularMarketPrice ??
+          quoteData.postMarketPrice ??
+          quoteData.preMarketPrice ??
+          quoteData.regularMarketPreviousClose ??
+          quoteData.previousClose;
 
         if (regularPrice && !isNaN(regularPrice) && Number(regularPrice) > 0) {
-          let changePercent = quote.regularMarketChangePercent ?? 0;
+          let changePercent = quoteData.regularMarketChangePercent ?? 0;
           if (
             changePercent === 0 &&
-            quote.regularMarketPreviousClose &&
-            quote.regularMarketPreviousClose > 0
+            quoteData.regularMarketPreviousClose &&
+            quoteData.regularMarketPreviousClose > 0
           ) {
             changePercent = Number(
               (
-                ((Number(regularPrice) - quote.regularMarketPreviousClose) /
-                  quote.regularMarketPreviousClose) *
+                ((Number(regularPrice) - quoteData.regularMarketPreviousClose) /
+                  quoteData.regularMarketPreviousClose) *
                 100
               ).toFixed(2)
             );
@@ -164,9 +248,12 @@ export async function getYahooQuote(ticker: string): Promise<RawProviderQuote | 
           return {
             price: Number(regularPrice),
             currency,
-            name: quote.shortName || quote.longName || quote.displayName || cleanTicker,
+            name: quoteData.shortName || quoteData.longName || quoteData.displayName || cleanTicker,
             changePercent,
-            monthReturnPercent: changePercent,
+            weekReturnPercent: returnsData?.weekReturn,
+            monthReturnPercent: returnsData?.monthReturn,
+            threeMonthReturnPercent: returnsData?.threeMonthReturn,
+            targetPrice: targetPrice ? Number(targetPrice.toFixed(4)) : undefined,
             source: 'yahoo',
           };
         }
@@ -179,8 +266,10 @@ export async function getYahooQuote(ticker: string): Promise<RawProviderQuote | 
   // 2. Second strategy: quoteSummary price module (essential for European ETFs like SXR8.DE, VWCE.DE)
   for (const sym of candidates) {
     try {
-      const summary: any = await withTimeout(yf.quoteSummary(sym, { modules: ['price'] }));
+      const summary: any = await withTimeout(yf.quoteSummary(sym, { modules: ['price', 'financialData'] }));
       const priceModule = summary?.price;
+      const targetPrice = summary?.financialData?.targetMeanPrice;
+      
       if (priceModule) {
         const regularPrice =
           priceModule.regularMarketPrice ??
@@ -191,12 +280,17 @@ export async function getYahooQuote(ticker: string): Promise<RawProviderQuote | 
         if (regularPrice && !isNaN(regularPrice) && Number(regularPrice) > 0) {
           const currency = (priceModule.currency || 'EUR').toUpperCase();
           const changePercent = Number((priceModule.regularMarketChangePercent ?? 0) * 100);
+          const returnsData = await fetchReturnsForTicker(sym);
+
           return {
             price: Number(regularPrice),
             currency,
             name: priceModule.shortName || priceModule.longName || cleanTicker,
             changePercent: Number(changePercent.toFixed(2)),
-            monthReturnPercent: Number(changePercent.toFixed(2)),
+            weekReturnPercent: returnsData?.weekReturn,
+            monthReturnPercent: returnsData?.monthReturn,
+            threeMonthReturnPercent: returnsData?.threeMonthReturn,
+            targetPrice: targetPrice ? Number(targetPrice.toFixed(4)) : undefined,
             source: 'yahoo',
           };
         }
@@ -210,7 +304,14 @@ export async function getYahooQuote(ticker: string): Promise<RawProviderQuote | 
   for (const sym of candidates) {
     const q1Result = await fetchYahooChartDirect(sym, 'https://query1.finance.yahoo.com');
     if (q1Result) {
-      return { ...q1Result, name: q1Result.name || cleanTicker };
+      const returnsData = await fetchReturnsForTicker(sym);
+      return {
+        ...q1Result,
+        name: q1Result.name || cleanTicker,
+        weekReturnPercent: returnsData?.weekReturn,
+        monthReturnPercent: returnsData?.monthReturn,
+        threeMonthReturnPercent: returnsData?.threeMonthReturn,
+      };
     }
   }
 
@@ -218,7 +319,14 @@ export async function getYahooQuote(ticker: string): Promise<RawProviderQuote | 
   for (const sym of candidates) {
     const q2Result = await fetchYahooChartDirect(sym, 'https://query2.finance.yahoo.com');
     if (q2Result) {
-      return { ...q2Result, name: q2Result.name || cleanTicker };
+      const returnsData = await fetchReturnsForTicker(sym);
+      return {
+        ...q2Result,
+        name: q2Result.name || cleanTicker,
+        weekReturnPercent: returnsData?.weekReturn,
+        monthReturnPercent: returnsData?.monthReturn,
+        threeMonthReturnPercent: returnsData?.threeMonthReturn,
+      };
     }
   }
 

@@ -8,7 +8,9 @@ export interface DirectQuote {
   currency: string;
   priceInEur: number;
   changePercent: number;
+  weekReturnPercent?: number;
   monthReturnPercent: number;
+  threeMonthReturnPercent?: number;
   timestamp: number;
   source: 'yahoo' | 'twelvedata' | 'finnhub';
   error?: boolean;
@@ -126,6 +128,20 @@ async function fetchFromYahoo(ticker: string): Promise<DirectQuote | null> {
           monthReturnPercent = Number((((regularPrice - firstPrice) / firstPrice) * 100).toFixed(2));
         }
 
+        // Variação de 1 semana (aproximadamente 5 pregões anteriores)
+        let weekReturnPercent = changePercent;
+        if (validCloses.length > 5) {
+          const weekPrice = validCloses[validCloses.length - 6];
+          if (weekPrice && weekPrice > 0) {
+            weekReturnPercent = Number((((regularPrice - weekPrice) / weekPrice) * 100).toFixed(2));
+          }
+        } else if (validCloses.length > 1) {
+          const weekPrice = validCloses[0];
+          if (weekPrice && weekPrice > 0) {
+            weekReturnPercent = Number((((regularPrice - weekPrice) / weekPrice) * 100).toFixed(2));
+          }
+        }
+
         return {
           ticker: ticker.toUpperCase(),
           name: meta.shortName || meta.longName || sym,
@@ -133,6 +149,7 @@ async function fetchFromYahoo(ticker: string): Promise<DirectQuote | null> {
           currency,
           priceInEur,
           changePercent,
+          weekReturnPercent: isNaN(weekReturnPercent) ? changePercent : weekReturnPercent,
           monthReturnPercent,
           timestamp: Date.now(),
           source: 'yahoo',

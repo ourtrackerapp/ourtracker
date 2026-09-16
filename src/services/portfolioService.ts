@@ -574,18 +574,46 @@ export function computePortfolio(
     const fxRateToEur = isError ? 1.0 : Number(quote.fxRateToEur || 1.0);
     const name = quote?.name || holding.ticker;
     const changePercent = isError ? undefined : quote?.changePercent;
+    const weekReturnPercent = isError ? undefined : quote?.weekReturnPercent;
     const monthReturnPercent = isError ? undefined : quote?.monthReturnPercent;
+    const threeMonthReturnPercent = isError ? undefined : quote?.threeMonthReturnPercent;
+    const targetPrice = isError ? undefined : quote?.targetPrice;
     const fallbackColor = holding.color || getDistinctColor(idx);
 
     const totalShares = Number(holding.shares || 0);
 
-    // Determinar data da primeira compra real (data mais antiga de todas as compras válidas)
+    const isForeignCurrency = nativeCurrency !== 'EUR';
+    const isPence = (quote?.currency === 'GBp' || quote?.currency === 'GBX' || quote?.currency === 'PENCE');
+
+    // Determinar data e preço unitário da primeira compra real (data mais antiga de todas as compras válidas)
     const purchases = holding.purchases || [];
     let firstPurchaseTimestamp: number | undefined = undefined;
     let firstPurchaseDate: string | undefined = undefined;
+    let firstPurchasePriceEur: number | undefined = undefined;
+
+    const parseDateToMs = (dateInput: any): number => {
+      if (!dateInput) return 0;
+      if (typeof dateInput === 'number') return dateInput;
+      if (dateInput instanceof Date) return dateInput.getTime();
+      if (typeof dateInput === 'string') {
+        const trimmed = dateInput.trim();
+        if (/^\d{2}\/\d{2}\/\d{4}$/.test(trimmed)) {
+          const [day, month, year] = trimmed.split('/');
+          const parsed = new Date(`${year}-${month}-${day}T00:00:00.000Z`);
+          if (!isNaN(parsed.getTime())) return parsed.getTime();
+        }
+        const parsed = new Date(trimmed);
+        if (!isNaN(parsed.getTime())) return parsed.getTime();
+      }
+      if (dateInput && typeof dateInput === 'object') {
+        if (typeof dateInput.seconds === 'number') return dateInput.seconds * 1000;
+        if (typeof dateInput._seconds === 'number') return dateInput._seconds * 1000;
+      }
+      return 0;
+    };
 
     const validPurchaseDates = purchases
-      .map((p) => (typeof p.date === 'string' ? new Date(p.date).getTime() : Number(p.date)))
+      .map((p) => parseDateToMs(p.date))
       .filter((d) => !isNaN(d) && d > 0);
 
     if (validPurchaseDates.length > 0) {
@@ -595,6 +623,23 @@ export function computePortfolio(
       const month = String(d.getMonth() + 1).padStart(2, '0');
       const year = d.getFullYear();
       firstPurchaseDate = `${day}/${month}/${year}`;
+
+      const oldestPurchase = purchases.find((p) => {
+        const t = parseDateToMs(p.date);
+        return t === firstPurchaseTimestamp;
+      });
+
+      if (oldestPurchase) {
+        if (oldestPurchase.priceEur && oldestPurchase.priceEur > 0) {
+          firstPurchasePriceEur = Number(oldestPurchase.priceEur);
+        } else if (oldestPurchase.price && oldestPurchase.price > 0) {
+          let effPrice = oldestPurchase.price;
+          if (isPence) effPrice = effPrice / 100;
+          firstPurchasePriceEur = isForeignCurrency ? effPrice * fxRateToEur : effPrice;
+        } else if (oldestPurchase.totalCostEur && oldestPurchase.shares > 0) {
+          firstPurchasePriceEur = oldestPurchase.totalCostEur / oldestPurchase.shares;
+        }
+      }
     } else if (holding.createdAt && holding.createdAt > 0) {
       firstPurchaseTimestamp = holding.createdAt;
       const d = new Date(firstPurchaseTimestamp);
@@ -604,55 +649,68 @@ export function computePortfolio(
       firstPurchaseDate = `${day}/${month}/${year}`;
     }
 
-    // 1. Capital Investido: Σ(custo_real_de_cada_compra_em_EUR)
-    // Se o ativo for em moeda estrangeira (USD, GBP, etc.):
-    // - Se totalCostEur estiver gravado, usa totalCostEur.
-    // - Se priceEur for fornecido e diferente do preço nativo, usa priceEur.
-    // - Se o preço estiver na moeda nativa ou priceEur for idêntico ao preço nativo para ativo não-EUR,
-    //   aplica a taxa cambial (fxRateToEur) para não tratar USD/GBP como EUR.
-    // - Ativos em GBP cotados em pence (GBp) são devidamente normalizados (/ 100).
-    const isForeignCurrency = nativeCurrency !== 'EUR';
-    const isPence = (quote?.currency === 'GBp' || quote?.currency === 'GBX' || quote?.currency === 'PENCE');
-
+    // 1. Capital Investido e Normalização de Todos os Lotes de Compra
+    // Para cada lote registado em purchases (ou lote sintetizado), determinamos:
+    // - timestamp da compra
+    // - número de ações
+    // - custo real em EUR (incluindo taxas e taxa cambial se aplicável)
+    const normalizedLots: Array<{ timestamp: number; shares: number; costEur: number }> = [];
     let totalInvested = 0;
+
     purchases.forEach((p) => {
       const sh = Number(p.shares || 0);
       if (sh <= 0) return;
 
       const fee = Number(p.feeEur || 0);
+      let lotCostEur = 0;
 
       // Prioridade 1: Custo total em EUR explicitamente registado
       if (p.totalCostEur !== undefined && Number(p.totalCostEur) > 0) {
-        totalInvested += Number(p.totalCostEur) + fee;
-        return;
-      }
-
-      const rawPrice = Number(p.price || 0);
-      const rawPriceEur = Number(p.priceEur || 0);
-
-      if (isForeignCurrency) {
-        // Se a moeda do ativo for estrangeira (ex: USD):
-        // Se priceEur existir e for diferente de price, o utilizador/sistema já converteu historicamente para EUR
-        if (rawPriceEur > 0 && rawPrice > 0 && Math.abs(rawPriceEur - rawPrice) > 0.001) {
-          totalInvested += sh * rawPriceEur + fee;
-        } else {
-          // Se priceEur == price ou apenas price existe, o valor armazenado é em moeda nativa (ex: 142.34 USD).
-          // NUNCA tratar esse valor como EUR! Converte para EUR usando a taxa cambial do ativo.
-          let effectiveNativePrice = rawPrice > 0 ? rawPrice : rawPriceEur;
-          if (isPence) {
-            effectiveNativePrice = effectiveNativePrice / 100;
-          }
-          const priceConvertedToEur = effectiveNativePrice * fxRateToEur;
-          totalInvested += sh * priceConvertedToEur + fee;
-        }
+        lotCostEur = Number(p.totalCostEur) + fee;
       } else {
-        // Ativo nativo em EUR: não há conversão cambial
-        const pPrice = rawPriceEur > 0 ? rawPriceEur : rawPrice;
-        if (pPrice > 0) {
-          totalInvested += sh * pPrice + fee;
+        const rawPrice = Number(p.price || 0);
+        const rawPriceEur = Number(p.priceEur || 0);
+
+        if (isForeignCurrency) {
+          if (rawPriceEur > 0 && rawPrice > 0 && Math.abs(rawPriceEur - rawPrice) > 0.001) {
+            lotCostEur = sh * rawPriceEur + fee;
+          } else {
+            let effectiveNativePrice = rawPrice > 0 ? rawPrice : rawPriceEur;
+            if (isPence) {
+              effectiveNativePrice = effectiveNativePrice / 100;
+            }
+            const priceConvertedToEur = effectiveNativePrice * fxRateToEur;
+            lotCostEur = sh * priceConvertedToEur + fee;
+          }
+        } else {
+          const pPrice = rawPriceEur > 0 ? rawPriceEur : rawPrice;
+          if (pPrice > 0) {
+            lotCostEur = sh * pPrice + fee;
+          }
         }
       }
+
+      if (lotCostEur > 0) {
+        totalInvested += lotCostEur;
+      }
+
+      const lotTimestamp = parseDateToMs(p.date) || holding.createdAt || Date.now();
+      normalizedLots.push({
+        timestamp: lotTimestamp,
+        shares: sh,
+        costEur: lotCostEur,
+      });
     });
+
+    // Se não havia compras detalhadas mas existem ações, cria um lote base
+    if (normalizedLots.length === 0 && totalShares > 0) {
+      const fallbackTs = holding.createdAt || firstPurchaseTimestamp || Date.now();
+      normalizedLots.push({
+        timestamp: fallbackTs,
+        shares: totalShares,
+        costEur: totalInvested > 0 ? totalInvested : (totalShares * currentPriceInEur),
+      });
+    }
 
     // 2. Preço Médio Ponderado em EUR
     const averagePrice = totalShares > 0 && totalInvested > 0 ? totalInvested / totalShares : 0;
@@ -660,14 +718,96 @@ export function computePortfolio(
     // 3. Valor Atual em EUR: quantidadeTotal × preçoAtualEmEUR
     const currentValue = isError || totalShares <= 0 ? 0 : totalShares * currentPriceInEur;
 
-    // 4. Lucro/Prejuízo: currentValue - totalInvested
+    // 4. Lucro/Prejuízo Total: currentValue - totalInvested
     const profitEur = !isError && totalInvested > 0 ? currentValue - totalInvested : 0;
 
-    // 5. Rentabilidade (%): (profitEur / totalInvested) * 100
+    // 5. Rentabilidade Total da Posição (%): (profitEur / totalInvested) * 100
     let totalReturnPercent: number | undefined = undefined;
     if (!isError && totalShares > 0 && totalInvested > 0 && currentPriceInEur > 0) {
       totalReturnPercent = Number(((profitEur / totalInvested) * 100).toFixed(2));
     }
+
+    // 6. Rentabilidade desde a 1ª Compra (%)
+    let firstPurchaseReturnPercent: number | undefined = totalReturnPercent;
+    if (!isError && firstPurchasePriceEur && firstPurchasePriceEur > 0 && currentPriceInEur > 0) {
+      firstPurchaseReturnPercent = Number((((currentPriceInEur - firstPurchasePriceEur) / firstPurchasePriceEur) * 100).toFixed(2));
+    }
+
+    // 7. Motor de Cálculo Rigoroso para as 4 Janelas Temporais (1d, 1w, 1m, 3m)
+    // Para cada lote, pondera o momento exato em que o capital entrou na carteira
+    const now = Date.now();
+    const computeWindowMetrics = (
+      marketReturnPercent: number | undefined,
+      windowMs: number
+    ): { returnPercent: number | undefined; returnEur: number | undefined } => {
+      if (!normalizedLots.length || currentPriceInEur <= 0 || isError) {
+        return { returnPercent: undefined, returnEur: undefined };
+      }
+
+      const windowStartTime = now - windowMs;
+
+      // Preço unitário no início da janela se marketReturnPercent estiver disponível
+      let startPriceEur: number | undefined = undefined;
+      if (marketReturnPercent !== undefined && !isNaN(marketReturnPercent)) {
+        const ratio = 1 + marketReturnPercent / 100;
+        if (ratio > 0.0001) {
+          startPriceEur = currentPriceInEur / ratio;
+        }
+      }
+
+      let capitalBaseEur = 0;
+      let windowProfitEur = 0;
+
+      for (const lot of normalizedLots) {
+        const lotCurrentVal = lot.shares * currentPriceInEur;
+        const effectiveLotCost = lot.costEur > 0 ? lot.costEur : (lot.shares * averagePrice);
+
+        if (lot.timestamp <= windowStartTime) {
+          // Lote adquirido ANTES da janela
+          if (startPriceEur !== undefined && startPriceEur > 0) {
+            const lotStartVal = lot.shares * startPriceEur;
+            capitalBaseEur += lotStartVal;
+            windowProfitEur += (lotCurrentVal - lotStartVal);
+          } else {
+            capitalBaseEur += effectiveLotCost;
+            windowProfitEur += (lotCurrentVal - effectiveLotCost);
+          }
+        } else {
+          // Lote / reforço adquirido DURANTE a janela
+          capitalBaseEur += effectiveLotCost;
+          windowProfitEur += (lotCurrentVal - effectiveLotCost);
+        }
+      }
+
+      if (capitalBaseEur <= 0) {
+        return { returnPercent: undefined, returnEur: undefined };
+      }
+
+      const retPct = Number(((windowProfitEur / capitalBaseEur) * 100).toFixed(2));
+      const retEur = Number(windowProfitEur.toFixed(2));
+
+      return { returnPercent: retPct, returnEur: retEur };
+    };
+
+    const oneDayMs = 24 * 60 * 60 * 1000;
+    const oneWeekMs = 7 * 24 * 60 * 60 * 1000;
+    const oneMonthMs = 30 * 24 * 60 * 60 * 1000;
+    const threeMonthMs = 90 * 24 * 60 * 60 * 1000;
+
+    const m1d = computeWindowMetrics(changePercent, oneDayMs);
+    const m1w = computeWindowMetrics(weekReturnPercent ?? changePercent, oneWeekMs);
+    const m1m = computeWindowMetrics(monthReturnPercent, oneMonthMs);
+    const m3m = computeWindowMetrics(threeMonthReturnPercent, threeMonthMs);
+
+    // Fallbacks para quando os dados históricos de mercado não existem
+    const effectiveChangePercent = m1d.returnPercent ?? changePercent;
+    const effectiveChangeEur = m1d.returnEur;
+    const effectiveWeekReturn = m1w.returnPercent ?? weekReturnPercent ?? changePercent;
+    const effectiveWeekEur = m1w.returnEur;
+    const effectiveMonthReturn = m1m.returnPercent ?? monthReturnPercent;
+    const effectiveMonthEur = m1m.returnEur;
+    const effectiveThreeMonthReturn = m3m.returnPercent ?? threeMonthReturnPercent;
+    const effectiveThreeMonthEur = m3m.returnEur;
 
     if (!isError && totalShares > 0) {
       totalPortfolioValue += currentValue;
@@ -690,9 +830,17 @@ export function computePortfolio(
       averagePrice: Number(averagePrice.toFixed(4)),
       profitEur: Number(profitEur.toFixed(2)),
       allocationPercent: 0,
-      changePercent,
-      monthReturnPercent,
+      changePercent: effectiveChangePercent,
+      changeEur: effectiveChangeEur,
+      weekReturnPercent: effectiveWeekReturn,
+      weekReturnEur: effectiveWeekEur,
+      monthReturnPercent: effectiveMonthReturn,
+      monthReturnEur: effectiveMonthEur,
+      threeMonthReturnPercent: effectiveThreeMonthReturn,
+      threeMonthReturnEur: effectiveThreeMonthEur,
+      targetPrice,
       totalReturnPercent,
+      firstPurchaseReturnPercent,
       firstPurchaseDate,
       firstPurchaseTimestamp,
       color: fallbackColor,

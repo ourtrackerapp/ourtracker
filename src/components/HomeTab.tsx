@@ -13,13 +13,93 @@ import { HomePerformanceChart } from './HomePerformanceChart';
 import { fetchPortfolioMeta } from '../services/portfolioService';
 import { TrendingUp, TrendingDown } from 'lucide-react';
 
+const getDisplayName = (ticker: string, originalName: string) => {
+  const t = ticker.toUpperCase();
+  if (t.includes('SXR8')) return 'SP500';
+  if (t.includes('VVSM')) return 'Semicondutores';
+  if (t.includes('SPCX') || t.includes('SPACE')) return 'SpaceX';
+  if (t.includes('ORCL')) return 'Oracle';
+  if (t.includes('AMZN')) return 'Amazon';
+  return originalName;
+};
+
+const CompanyLogo: React.FC<{ ticker: string; name: string }> = ({ ticker, name }) => {
+  const [imgError, setImgError] = useState(false);
+  
+  const isEtf = name.toLowerCase().includes('ishares') || name.toLowerCase().includes('vanguard') || name.toLowerCase().includes('etf') || ticker.includes('.');
+
+  const getLogoUrl = () => {
+    const t = ticker.toUpperCase();
+    
+    // Explicit manual overrides for high-res logos where Google Favicons fails/returns low-res
+    if (t === 'AMZN') return 'https://upload.wikimedia.org/wikipedia/commons/a/a9/Amazon_logo.svg';
+    if (t === 'ORCL') return 'https://upload.wikimedia.org/wikipedia/commons/5/50/Oracle_logo.svg';
+    if (t === 'SKHY') return 'https://upload.wikimedia.org/wikipedia/commons/2/24/SK_Hynix.svg';
+    
+    // Guess domain for Google Favicons
+    const n = name.toLowerCase();
+    const exactMatches: Record<string, string> = {
+      'AAPL': 'apple.com',
+      'MSFT': 'microsoft.com',
+      'GOOGL': 'google.com',
+      'GOOG': 'google.com',
+      'TSLA': 'tesla.com',
+      'META': 'meta.com',
+      'LEU': 'centrusenergy.com',
+      'NVDA': 'nvidia.com',
+      'AMD': 'amd.com',
+      'INTC': 'intel.com',
+      'NFLX': 'netflix.com',
+      'DIS': 'thewaltdisneycompany.com',
+      'SPOT': 'spotify.com',
+      'UBER': 'uber.com',
+      'ABNB': 'airbnb.com',
+      'SPACE': 'spacex.com',
+      'SPACEX': 'spacex.com',
+      'SPCX': 'spacex.com'
+    };
+    
+    const domain = exactMatches[t] || `${n.replace(/[^a-z0-9 ]/g, '').split(' ')[0]}.com`;
+    return `https://www.google.com/s2/favicons?domain=${domain}&sz=256`;
+  };
+
+  if (isEtf || ticker.toUpperCase() === 'SXR8' || ticker.toUpperCase() === 'VVSM') {
+    return (
+      <div className="w-[43px] h-[43px] rounded-full border border-slate-200 flex flex-shrink-0 items-center justify-center bg-slate-50 overflow-hidden shadow-[0_1px_3px_rgba(0,0,0,0.05)]">
+        <span className="text-[12px] font-bold text-slate-700 tracking-tighter truncate px-0.5">
+          {ticker.split('.')[0].toUpperCase()}
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="w-[43px] h-[43px] rounded-full border border-slate-100 flex flex-shrink-0 items-center justify-center bg-white overflow-hidden shadow-[0_1px_3px_rgba(0,0,0,0.05)] p-0.5">
+      {!imgError ? (
+        <img 
+          src={getLogoUrl()} 
+          alt={ticker} 
+          className="w-full h-full object-contain rounded-full bg-white"
+          onError={() => setImgError(true)}
+        />
+      ) : (
+        <img 
+          src={`https://ui-avatars.com/api/?name=${ticker.charAt(0)}&background=f1f5f9&color=0f172a&font-size=0.4&rounded=true&bold=true`}
+          alt={ticker} 
+          className="w-full h-full object-contain rounded-full"
+        />
+      )}
+    </div>
+  );
+};
+
 interface Props {
   holdings: HoldingDoc[];
   totalValue: number;
   positions: PortfolioPosition[];
 }
 
-const PERIODS: PeriodOption[] = ['1D', '1S', '1M', '3M', '6M', '1A', 'Tudo'];
+const PERIODS: PeriodOption[] = ['1D', '1S', '1M', '3M', 'YTD', 'Tudo'];
 
 export const HomeTab: React.FC<Props> = ({ holdings, totalValue, positions }) => {
   const [selectedPeriod, setSelectedPeriod] = useState<PeriodOption>('1M');
@@ -31,7 +111,7 @@ export const HomeTab: React.FC<Props> = ({ holdings, totalValue, positions }) =>
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [hoveredPoint, setHoveredPoint] = useState<HomeChartPoint | null>(null);
 
-  // Fetch chart data on period, holdings, or benchmark toggles
+  // Fetch chart data on period, holdings or benchmarks toggles
   useEffect(() => {
     let isCancelled = false;
 
@@ -65,39 +145,51 @@ export const HomeTab: React.FC<Props> = ({ holdings, totalValue, positions }) =>
 
   const isAnyBenchmarkActive = showSp500 || showNasdaq || showRussell;
 
-  // Movers & Losers Calculation: Classified by 24h change (changePercent) with no overlap between tables
-  const { topMovers, topLosers } = useMemo(() => {
+  // Performance Calculation: Single sorted list of all valid positions
+  const sortedPositions = useMemo(() => {
     // Filter out error positions and those with zero shares
     const validPositions = positions.filter(p => !p.isError && p.shares > 0);
     
-    // Sort by 24h changePercent descending
-    const sorted = [...validPositions].sort((a, b) => {
+    // Sort by 24h changePercent descending (best performance to worst)
+    return [...validPositions].sort((a, b) => {
       const chgA = a.changePercent !== undefined && !isNaN(a.changePercent) ? a.changePercent : -999999;
       const chgB = b.changePercent !== undefined && !isNaN(b.changePercent) ? b.changePercent : -999999;
       return chgB - chgA;
     });
-
-    if (sorted.length === 0) {
-      return { topMovers: [], topLosers: [] };
-    }
-
-    // Determine safe split so no stock ever appears in both tables
-    const half = Math.ceil(sorted.length / 2);
-    const maxMovers = Math.min(5, half);
-    const movers = sorted.slice(0, maxMovers);
-    const moverIds = new Set(movers.map(m => m.id));
-
-    // Remaining positions for losers
-    const remaining = sorted.filter(p => !moverIds.has(p.id));
-    const losers = remaining.slice(-5).reverse();
-    
-    return {
-      topMovers: movers,
-      topLosers: losers,
-    };
   }, [positions]);
 
-  // Helper for text color based on return percentage
+  // Unidade de exibição global: '%' (percentagem) ou 'eur' (€)
+  const [displayUnit, setDisplayUnit] = useState<'percent' | 'eur'>('percent');
+
+  const toggleDisplayUnit = () => {
+    setDisplayUnit((prev) => (prev === 'eur' ? 'percent' : 'eur'));
+  };
+
+  // Cálculo da variação em Euros a partir da percentagem de retorno e do valor atual da posição
+  const calcEuroChange = (currentValueEur: number | undefined, percent: number | undefined): number | undefined => {
+    if (percent === undefined || percent === null || isNaN(percent) || !currentValueEur || currentValueEur <= 0) {
+      return undefined;
+    }
+    const ratio = 1 + percent / 100;
+    if (ratio <= 0.0001) {
+      return -currentValueEur;
+    }
+    return currentValueEur - (currentValueEur / ratio);
+  };
+
+  const formatEuroValue = (val: number | undefined): string => {
+    if (val === undefined || isNaN(val)) return '-';
+    const abs = Math.abs(val);
+    if (abs < 0.005) return '0,00€';
+    const prefix = val > 0 ? '+' : '-';
+    const formattedNum = abs.toLocaleString('pt-PT', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+    return `${prefix}${formattedNum}€`;
+  };
+
+  // Helper for text color based on return percentage or euro change
   const getReturnColorClass = (val: number | undefined) => {
     if (val === undefined || val === null || isNaN(val)) return 'text-slate-400';
     if (val > 0) return 'text-emerald-600';
@@ -304,70 +396,91 @@ export const HomeTab: React.FC<Props> = ({ holdings, totalValue, positions }) =>
         })}
       </div>
 
-      {/* 4. MOVERS & LOSERS SECTION */}
-      <div className="w-full mt-2 border-t border-slate-100 pt-4">
-        <div className="grid grid-cols-2 gap-6">
-          {/* Top Movers Column */}
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center gap-2 pb-1 border-b border-slate-50">
-              <div className="w-6 h-6 rounded-lg bg-emerald-50 flex items-center justify-center">
-                <TrendingUp className="w-3.5 h-3.5 text-emerald-600" />
-              </div>
-              <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Movers</h3>
-            </div>
-            
-            <div className="flex flex-col gap-2.5">
-              {topMovers.length > 0 ? topMovers.map((p) => (
-                <div key={p.id} className="flex items-center justify-between group">
-                  <div className="flex flex-col min-w-0 pr-1">
-                    <span className="text-[11px] font-bold text-slate-800 truncate">{p.ticker}</span>
-                    <span className="text-[9px] text-slate-400 truncate max-w-[65px]">{p.name}</span>
-                  </div>
-                  <div className="flex flex-col items-end flex-shrink-0 text-right">
-                    <span className={`text-[11px] font-bold ${getReturnColorClass(p.changePercent)}`}>
-                      {formatPercentString(p.changePercent || 0)}
-                    </span>
-                    <span className="text-[9px] font-medium text-slate-400">
-                      Tot: {formatPercentString(p.totalReturnPercent || 0)}
-                    </span>
-                  </div>
-                </div>
-              )) : (
-                <span className="text-[10px] text-slate-300 italic pt-1">Sem posições</span>
-              )}
-            </div>
-          </div>
+      {/* 4. PERFORMANCE LIST SECTION */}
+      <div className="w-full mt-2">
+        <div className="flex flex-col">
+          {sortedPositions.length > 0 ? sortedPositions.map((p) => {
+            const isEur = displayUnit === 'eur';
+            const posValueEur = p.value ?? (p.shares > 0 && p.currentPrice ? p.shares * p.currentPrice : 0);
 
-          {/* Top Losers Column */}
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center gap-2 pb-1 border-b border-slate-50">
-              <div className="w-6 h-6 rounded-lg bg-rose-50 flex items-center justify-center">
-                <TrendingDown className="w-3.5 h-3.5 text-rose-600" />
-              </div>
-              <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Losers</h3>
-            </div>
-            
-            <div className="flex flex-col gap-2.5">
-              {topLosers.length > 0 ? topLosers.map((p) => (
-                <div key={p.id} className="flex items-center justify-between group">
-                  <div className="flex flex-col min-w-0 pr-1">
-                    <span className="text-[11px] font-bold text-slate-800 truncate">{p.ticker}</span>
-                    <span className="text-[9px] text-slate-400 truncate max-w-[65px]">{p.name}</span>
-                  </div>
-                  <div className="flex flex-col items-end flex-shrink-0 text-right">
-                    <span className={`text-[11px] font-bold ${getReturnColorClass(p.changePercent)}`}>
-                      {formatPercentString(p.changePercent || 0)}
+            const euro1Dia = p.changeEur !== undefined ? p.changeEur : calcEuroChange(posValueEur, p.changePercent);
+            const euro1Sem = p.weekReturnEur !== undefined ? p.weekReturnEur : calcEuroChange(posValueEur, p.weekReturnPercent);
+            const euro1Mes = p.monthReturnEur !== undefined ? p.monthReturnEur : calcEuroChange(posValueEur, p.monthReturnPercent);
+            const euro3Mes = p.threeMonthReturnEur !== undefined ? p.threeMonthReturnEur : calcEuroChange(posValueEur, p.threeMonthReturnPercent);
+            const euro1Compra = p.profitEur !== undefined
+              ? p.profitEur
+              : calcEuroChange(posValueEur, p.firstPurchaseReturnPercent ?? p.totalReturnPercent);
+
+            return (
+            <div 
+              key={p.id} 
+              onClick={toggleDisplayUnit}
+              className="flex items-center gap-2.5 py-2 px-1.5 -mx-1.5 rounded-xl border-b border-slate-50 last:border-0 group cursor-pointer hover:bg-slate-50/80 active:scale-[0.99] transition-all select-none"
+              title="Clique para alternar entre % e EUR para todas as ações"
+            >
+              <CompanyLogo ticker={p.ticker} name={p.name} />
+              <div className="flex flex-col flex-1 min-w-0">
+                {/* Ticker & Name */}
+                <div className="flex items-baseline gap-1.5 leading-tight truncate mb-1">
+                  <span className="text-[11.5px] font-bold text-slate-800 shrink-0 tracking-tight">{p.ticker}</span>
+                  <span className="text-[10px] text-slate-400 truncate">{getDisplayName(p.ticker, p.name)}</span>
+                </div>
+                
+                {/* 5 Performance intervals starting directly under the ticker */}
+                <div className="grid grid-cols-5 gap-1 items-center w-full">
+                  {/* 1 dia (debaixo do ticker) */}
+                  <div className="flex flex-col items-start leading-none">
+                    <span className="text-[7.5px] font-semibold text-slate-400 uppercase tracking-wider">1 dia</span>
+                    <span className={`text-[10px] font-bold mt-0.5 tabular-nums ${getReturnColorClass(isEur ? euro1Dia : p.changePercent)}`}>
+                      {isEur ? formatEuroValue(euro1Dia) : formatPercentString(p.changePercent ?? 0)}
                     </span>
-                    <span className="text-[9px] font-medium text-slate-400">
-                      Tot: {formatPercentString(p.totalReturnPercent || 0)}
+                  </div>
+
+                  {/* 1 semana */}
+                  <div className="flex flex-col items-center leading-none">
+                    <span className="text-[7.5px] font-semibold text-slate-400 uppercase tracking-wider">1 sem</span>
+                    <span className={`text-[10px] font-bold mt-0.5 tabular-nums ${getReturnColorClass(isEur ? euro1Sem : p.weekReturnPercent)}`}>
+                      {isEur 
+                        ? formatEuroValue(euro1Sem) 
+                        : (p.weekReturnPercent !== undefined ? formatPercentString(p.weekReturnPercent) : '-')}
+                    </span>
+                  </div>
+
+                  {/* 1 mês */}
+                  <div className="flex flex-col items-center leading-none">
+                    <span className="text-[7.5px] font-semibold text-slate-400 uppercase tracking-wider">1 mês</span>
+                    <span className={`text-[10px] font-bold mt-0.5 tabular-nums ${getReturnColorClass(isEur ? euro1Mes : p.monthReturnPercent)}`}>
+                      {isEur 
+                        ? formatEuroValue(euro1Mes) 
+                        : (p.monthReturnPercent !== undefined ? formatPercentString(p.monthReturnPercent) : '-')}
+                    </span>
+                  </div>
+
+                  {/* 3 meses */}
+                  <div className="flex flex-col items-center leading-none">
+                    <span className="text-[7.5px] font-semibold text-slate-400 uppercase tracking-wider">3 meses</span>
+                    <span className={`text-[10px] font-bold mt-0.5 tabular-nums ${getReturnColorClass(isEur ? euro3Mes : p.threeMonthReturnPercent)}`}>
+                      {isEur 
+                        ? formatEuroValue(euro3Mes) 
+                        : (p.threeMonthReturnPercent !== undefined ? formatPercentString(p.threeMonthReturnPercent) : '-')}
+                    </span>
+                  </div>
+
+                  {/* 1ª compra */}
+                  <div className="flex flex-col items-end leading-none">
+                    <span className="text-[7.5px] font-semibold text-slate-400 uppercase tracking-wider">1ª compra</span>
+                    <span className={`text-[10px] font-bold mt-0.5 tabular-nums ${getReturnColorClass(isEur ? euro1Compra : (p.firstPurchaseReturnPercent ?? p.totalReturnPercent))}`}>
+                      {isEur 
+                        ? formatEuroValue(euro1Compra) 
+                        : formatPercentString(p.firstPurchaseReturnPercent ?? p.totalReturnPercent ?? 0)}
                     </span>
                   </div>
                 </div>
-              )) : (
-                <span className="text-[10px] text-slate-300 italic pt-1">Sem posições</span>
-              )}
+              </div>
             </div>
-          </div>
+          )}) : (
+            <span className="text-[10px] text-slate-300 italic pt-1 px-1 text-center w-full block">Sem posições</span>
+          )}
         </div>
       </div>
     </div>

@@ -219,12 +219,26 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
     x: number;
     y: number;
     timestamp: number;
+    buyPrice: number;
     buyPriceEur: number;
     dateFormatted: string;
     shares: number;
+    high: number;
+    low: number;
     highEur: number;
     lowEur: number;
   } | null>(null);
+
+  // Determine if stock is US-based (USD currency)
+  const isUsd = useMemo(() => {
+    const curr = (chartData?.currency || position?.nativeCurrency || '').toUpperCase();
+    if (curr === 'USD') return true;
+    if (curr === 'EUR') return false;
+    const ticker = (position?.ticker || '').toUpperCase();
+    return !ticker.includes('.') || ticker.endsWith('.US');
+  }, [chartData?.currency, position?.nativeCurrency, position?.ticker]);
+
+  const currencySymbol = isUsd ? '$' : '€';
 
   // Active Metric Modal for explanation
   const [selectedExplanationKey, setSelectedExplanationKey] = useState<string | null>(null);
@@ -341,7 +355,7 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
       };
     }
 
-    const prices = points.map((p) => p.priceEur);
+    const prices = points.map((p) => (isUsd ? (p.price ?? p.priceEur) : p.priceEur));
     const min = Math.min(...prices);
     const max = Math.max(...prices);
     const paddingY = (max - min) * 0.12 || max * 0.05 || 1;
@@ -354,13 +368,16 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
     const usableWidth = w - marginX * 2;
 
     const coords = points.map((p, idx) => {
+      const pVal = isUsd ? (p.price ?? p.priceEur) : p.priceEur;
       const x = marginX + (idx / Math.max(1, points.length - 1)) * usableWidth;
-      const yRatio = (p.priceEur - yMin) / (yMax - yMin || 1);
+      const yRatio = (pVal - yMin) / (yMax - yMin || 1);
       const y = h - (yRatio * (h - 36) + 18);
       return { x, y, point: p, index: idx };
     });
 
-    const refStartPrice = chartData?.windowMetrics?.startPriceEur ?? points[0].priceEur;
+    const refStartPrice = isUsd
+      ? (chartData?.windowMetrics?.startPriceNative ?? points[0]?.price ?? points[0]?.priceEur)
+      : (chartData?.windowMetrics?.startPriceEur ?? points[0]?.priceEur);
     const startYRatio = (refStartPrice - yMin) / (yMax - yMin || 1);
     const hLineY = h - (startYRatio * (h - 36) + 18);
 
@@ -441,9 +458,12 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
       x: number;
       y: number;
       timestamp: number;
+      buyPrice: number;
       buyPriceEur: number;
       dateFormatted: string;
       shares: number;
+      high: number;
+      low: number;
       highEur: number;
       lowEur: number;
     }> = [];
@@ -481,11 +501,18 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
         pEur = purchase.price * fx;
       }
 
+      const pNative = purchase.price != null 
+        ? purchase.price 
+        : (fx > 0 ? pEur / fx : pEur);
+      const dayHighNative = closest.point.high != null ? closest.point.high : (fx > 0 ? dayHigh / fx : dayHigh);
+      const dayLowNative = closest.point.low != null ? closest.point.low : (fx > 0 ? dayLow / fx : dayLow);
+
       markers.push({
         id: purchase.id || `purchase-${idx}`,
         x: closest.x,
         y: closest.y,
         timestamp: pTs,
+        buyPrice: isUsd ? pNative : pEur,
         buyPriceEur: pEur,
         dateFormatted: new Date(pTs).toLocaleDateString('pt-PT', {
           day: '2-digit',
@@ -493,13 +520,15 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
           year: 'numeric',
         }),
         shares: purchase.shares,
+        high: isUsd ? dayHighNative : dayHigh,
+        low: isUsd ? dayLowNative : dayLow,
         highEur: dayHigh,
         lowEur: dayLow,
       });
     });
 
     return markers;
-  }, [purchaseRecords, coordinates, chartData]);
+  }, [purchaseRecords, coordinates, chartData, isUsd]);
 
   const hoveredPurchaseInfo = useMemo(() => {
     if (activePurchaseTooltip) return activePurchaseTooltip;
@@ -526,11 +555,11 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
     const startPoint = sliced[0];
     const endPoint = sliced[sliced.length - 1];
 
-    const startPriceEur = startPoint.priceEur;
-    const endPriceEur = endPoint.priceEur;
-    const diffEur = endPriceEur - startPriceEur;
-    const diffPercent = startPriceEur > 0 ? (diffEur / startPriceEur) * 100 : 0;
-    const isPos = diffEur >= 0;
+    const startPrice = isUsd ? (startPoint.price ?? startPoint.priceEur) : startPoint.priceEur;
+    const endPrice = isUsd ? (endPoint.price ?? endPoint.priceEur) : endPoint.priceEur;
+    const diff = endPrice - startPrice;
+    const diffPercent = startPrice > 0 ? (diff / startPrice) * 100 : 0;
+    const isPos = diff >= 0;
 
     const leftCoord = coordinates[leftIdx] || coordinates[0];
     const rightCoord = coordinates[rightIdx] || coordinates[coordinates.length - 1];
@@ -552,9 +581,9 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
     });
 
     return {
-      startPriceEur,
-      endPriceEur,
-      diffEur,
+      startPrice,
+      endPrice,
+      diff,
       diffPercent,
       isPos,
       leftX: leftCoord.x,
@@ -563,18 +592,22 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
       leftDateFormatted,
       rightDateFormatted,
     };
-  }, [twoFingerRange, points, coordinates, selectedRange]);
+  }, [twoFingerRange, points, coordinates, selectedRange, isUsd]);
 
   const activeIndex = scrubIndex !== null ? scrubIndex : points.length - 1;
   const activePoint = points[activeIndex] || null;
   const activeCoord = coordinates[activeIndex] || null;
 
   // Ponto inicial determinístico da janela (calculado pelo backend com base no targetStartTimestamp da janela selecionada)
-  const defaultStartPriceEur = chartData?.windowMetrics?.startPriceEur ?? (points.length > 0 ? points[0].priceEur : (position?.currentPrice || 0));
-  const startPriceEur = defaultStartPriceEur;
-  const displayedPriceEur = activePoint ? activePoint.priceEur : (position?.currentPrice || 0);
-  const diffFromStart = displayedPriceEur - startPriceEur;
-  const diffPercentFromStart = startPriceEur > 0 ? (diffFromStart / startPriceEur) * 100 : 0;
+  const defaultStartPrice = isUsd
+    ? (chartData?.windowMetrics?.startPriceNative ?? (points.length > 0 ? (points[0].price ?? points[0].priceEur) : (position?.nativePrice || position?.currentPrice || 0)))
+    : (chartData?.windowMetrics?.startPriceEur ?? (points.length > 0 ? points[0].priceEur : (position?.currentPrice || 0)));
+  const startPrice = defaultStartPrice;
+  const displayedPrice = activePoint 
+    ? (isUsd ? (activePoint.price ?? activePoint.priceEur) : activePoint.priceEur)
+    : (isUsd ? (position?.nativePrice || position?.currentPrice || 0) : (position?.currentPrice || 0));
+  const diffFromStart = displayedPrice - startPrice;
+  const diffPercentFromStart = startPrice > 0 ? (diffFromStart / startPrice) * 100 : 0;
   const isPositive = diffFromStart >= 0;
 
   const getIndexFromClientX = (clientX: number) => {
@@ -749,9 +782,9 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
           <div className="px-5 pt-4 pb-1 shrink-0">
             <div className="flex flex-col">
               <div className="flex items-baseline gap-1">
-                <span className="text-lg font-bold text-slate-900">€</span>
+                <span className="text-lg font-bold text-slate-900">{currencySymbol}</span>
                 <span className="text-4xl sm:text-5xl font-black text-slate-900 tracking-tight tabular-nums">
-                  {displayedPriceEur.toLocaleString('pt-PT', {
+                  {displayedPrice.toLocaleString('pt-PT', {
                     minimumFractionDigits: 2,
                     maximumFractionDigits: 2,
                   })}
@@ -773,7 +806,7 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                     isPositive ? 'text-emerald-600' : 'text-rose-600'
                   }`}
                 >
-                  {isPositive ? '+' : '-'}€
+                  {isPositive ? '+' : '-'}{currencySymbol}
                   {Math.abs(diffFromStart).toLocaleString('pt-PT', {
                     minimumFractionDigits: 2,
                     maximumFractionDigits: 2,
@@ -787,7 +820,8 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                     <div className="text-xs text-slate-700 font-medium leading-tight">
                       Preço compra:{' '}
                       <strong className="text-xs font-bold text-slate-900 tabular-nums">
-                        €{hoveredPurchaseInfo.buyPriceEur.toLocaleString('pt-PT', {
+                        {currencySymbol}
+                        {hoveredPurchaseInfo.buyPrice.toLocaleString('pt-PT', {
                           minimumFractionDigits: 2,
                           maximumFractionDigits: 2,
                         })}
@@ -795,14 +829,16 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                     </div>
                     <div className="flex items-center gap-2 text-[11px] text-slate-400 font-normal tabular-nums leading-tight">
                       <span>
-                        Mín: €{hoveredPurchaseInfo.lowEur.toLocaleString('pt-PT', {
+                        Mín: {currencySymbol}
+                        {hoveredPurchaseInfo.low.toLocaleString('pt-PT', {
                           minimumFractionDigits: 2,
                           maximumFractionDigits: 2,
                         })}
                       </span>
                       <span className="text-slate-300">•</span>
                       <span>
-                        Máx: €{hoveredPurchaseInfo.highEur.toLocaleString('pt-PT', {
+                        Máx: {currencySymbol}
+                        {hoveredPurchaseInfo.high.toLocaleString('pt-PT', {
                           minimumFractionDigits: 2,
                           maximumFractionDigits: 2,
                         })}
@@ -1011,7 +1047,7 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                       }}
                     >
                       <span className="text-xs font-black text-slate-900 tabular-nums bg-white/90 px-1 rounded">
-                        €{twoFingerStats.startPriceEur.toFixed(2)}
+                        {currencySymbol}{twoFingerStats.startPrice.toFixed(2)}
                       </span>
                       <span className="text-[10px] font-semibold text-slate-400 whitespace-nowrap">
                         {twoFingerStats.leftDateFormatted}
@@ -1029,7 +1065,7 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                           twoFingerStats.isPos ? 'text-emerald-600' : 'text-rose-600'
                         }`}
                       >
-                        {twoFingerStats.isPos ? '+' : '-'}€{Math.abs(twoFingerStats.diffEur).toFixed(2)}
+                        {twoFingerStats.isPos ? '+' : '-'}{currencySymbol}{Math.abs(twoFingerStats.diff).toFixed(2)}
                       </span>
                       <span
                         className={`text-[11px] font-black tabular-nums ${
@@ -1048,7 +1084,7 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                       }}
                     >
                       <span className="text-xs font-black text-slate-900 tabular-nums bg-white/90 px-1 rounded">
-                        €{twoFingerStats.endPriceEur.toFixed(2)}
+                        {currencySymbol}{twoFingerStats.endPrice.toFixed(2)}
                       </span>
                       <span className="text-[10px] font-semibold text-slate-400 whitespace-nowrap">
                         {twoFingerStats.rightDateFormatted}
@@ -1102,7 +1138,7 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                       <Info className="w-3 h-3 text-slate-400" />
                     </div>
                     <div className="text-xs font-black text-slate-800 tabular-nums">
-                      €{metrics?.dayLowEur?.toFixed(2)} - €{metrics?.dayHighEur?.toFixed(2)}
+                      {currencySymbol}{(isUsd ? (metrics?.dayLow ?? metrics?.dayLowEur) : metrics?.dayLowEur)?.toFixed(2)} - {currencySymbol}{(isUsd ? (metrics?.dayHigh ?? metrics?.dayHighEur) : metrics?.dayHighEur)?.toFixed(2)}
                     </div>
                   </div>
                 )}
@@ -1134,8 +1170,8 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                     </div>
 
                     <div className="flex justify-between text-[11px] font-bold text-slate-400 tabular-nums">
-                      <span>Mín: €{metrics?.fiftyTwoWeekLowEur?.toFixed(2)}</span>
-                      <span>Máx: €{metrics?.fiftyTwoWeekHighEur?.toFixed(2)}</span>
+                      <span>Mín: {currencySymbol}{(isUsd ? (metrics?.fiftyTwoWeekLow ?? metrics?.fiftyTwoWeekLowEur) : metrics?.fiftyTwoWeekLowEur)?.toFixed(2)}</span>
+                      <span>Máx: {currencySymbol}{(isUsd ? (metrics?.fiftyTwoWeekHigh ?? metrics?.fiftyTwoWeekHighEur) : metrics?.fiftyTwoWeekHighEur)?.toFixed(2)}</span>
                     </div>
                   </div>
                 )}
@@ -1194,7 +1230,7 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                     </div>
                   )}
 
-                  {metrics?.epsEur != null && (
+                  {(isUsd ? (metrics?.eps ?? metrics?.epsEur) : metrics?.epsEur) != null && (
                     <div
                       onClick={() => setSelectedExplanationKey('eps')}
                       className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3 cursor-pointer active:bg-slate-100 transition-colors"
@@ -1204,7 +1240,7 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                         <Info className="w-3 h-3 text-slate-300" />
                       </div>
                       <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
-                        €{metrics.epsEur.toFixed(2)}
+                        {currencySymbol}{(isUsd ? (metrics?.eps ?? metrics?.epsEur) : metrics?.epsEur)?.toFixed(2)}
                       </div>
                     </div>
                   )}
@@ -1234,7 +1270,7 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                   <span>Estimativas & Previsões</span>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
-                  {metrics?.targetPriceEur != null && (
+                  {(isUsd ? (metrics?.targetPrice ?? metrics?.targetPriceEur) : metrics?.targetPriceEur) != null && (
                     <div
                       onClick={() => setSelectedExplanationKey('targetPrice')}
                       className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3 cursor-pointer active:bg-slate-100 transition-colors"
@@ -1244,7 +1280,7 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                         <Info className="w-3 h-3 text-slate-300" />
                       </div>
                       <div className="text-base font-black text-sky-700 mt-1 tabular-nums">
-                        €{metrics.targetPriceEur.toFixed(2)}
+                        {currencySymbol}{(isUsd ? (metrics?.targetPrice ?? metrics?.targetPriceEur) : metrics?.targetPriceEur)?.toFixed(2)}
                       </div>
                     </div>
                   )}
@@ -1289,7 +1325,7 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                     </div>
                   )}
 
-                  {metrics?.dividendRateEur != null && (
+                  {(isUsd ? (metrics?.dividendRate ?? metrics?.dividendRateEur) : metrics?.dividendRateEur) != null && (
                     <div
                       onClick={() => setSelectedExplanationKey('dividendRate')}
                       className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3 cursor-pointer active:bg-slate-100 transition-colors"
@@ -1299,7 +1335,7 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                         <Info className="w-3 h-3 text-slate-300" />
                       </div>
                       <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
-                        €{metrics.dividendRateEur.toFixed(2)}
+                        {currencySymbol}{(isUsd ? (metrics?.dividendRate ?? metrics?.dividendRateEur) : metrics?.dividendRateEur)?.toFixed(2)}
                       </div>
                     </div>
                   )}

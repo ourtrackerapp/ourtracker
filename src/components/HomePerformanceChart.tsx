@@ -169,34 +169,34 @@ export const HomePerformanceChart: React.FC<Props> = ({
       });
     };
 
-    // 1. Draw S&P 500 (Yellow) if active
+    // 1. Draw S&P 500 (Yellow) if active - more transparent than portfolio
     if (showSp500) {
       ctx.save();
-      ctx.globalAlpha = 0.5;
-      drawSeries((p) => p.sp500?.returnPercent, COLOR_SP500, 1);
+      ctx.globalAlpha = 0.35;
+      drawSeries((p) => p.sp500?.returnPercent, COLOR_SP500, 1.6);
       ctx.restore();
     }
 
-    // 2. Draw Nasdaq (Green) if active
+    // 2. Draw Nasdaq (Green) if active - more transparent than portfolio
     if (showNasdaq) {
       ctx.save();
-      ctx.globalAlpha = 0.5;
-      drawSeries((p) => p.nasdaq?.returnPercent, COLOR_NASDAQ, 1);
+      ctx.globalAlpha = 0.35;
+      drawSeries((p) => p.nasdaq?.returnPercent, COLOR_NASDAQ, 1.6);
       ctx.restore();
     }
 
-    // 3. Draw Russell (Purple) if active
+    // 3. Draw Russell (Purple) if active - more transparent than portfolio
     if (showRussell) {
       ctx.save();
-      ctx.globalAlpha = 0.5;
-      drawSeries((p) => p.russell?.returnPercent, COLOR_RUSSELL, 1);
+      ctx.globalAlpha = 0.35;
+      drawSeries((p) => p.russell?.returnPercent, COLOR_RUSSELL, 1.6);
       ctx.restore();
     }
 
     // 4. Draw Portfolio (Blue) - always main line, thick & opaque
     ctx.save();
     ctx.globalAlpha = 1.0;
-    drawSeries((p) => p.portfolio?.returnPercent, COLOR_PORTFOLIO, 2.25);
+    drawSeries((p) => p.portfolio?.returnPercent, COLOR_PORTFOLIO, 2.5);
     ctx.restore();
 
     // 5. Draw Crosshair / Active Point during drag
@@ -227,7 +227,7 @@ export const HomePerformanceChart: React.FC<Props> = ({
     }
 
     ctx.restore();
-  }, [points, showSp500, showNasdaq]);
+  }, [points, showSp500, showNasdaq, showRussell]);
 
   // Handle Resize & Points change
   useEffect(() => {

@@ -1,0 +1,2 @@
+Forçando atualização do Git: 2026-09-17T07:40:03-07:00
+Todas as correções de telemetria, erros nos providers, e endpoints prontos para Vercel.

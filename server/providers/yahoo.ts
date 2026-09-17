@@ -1,4 +1,4 @@
-import YahooFinance from 'yahoo-finance2';
+import yahooFinance from 'yahoo-finance2';
 
 export interface RawProviderQuote {
   price: number;
@@ -13,7 +13,8 @@ export interface RawProviderQuote {
   source: string;
 }
 
-const yf = new YahooFinance({
+const YahooFinanceClass = (yahooFinance as any).default || yahooFinance;
+const yf = new YahooFinanceClass({
   validation: { logErrors: false },
   suppressNotices: ['yahooSurvey'],
 });

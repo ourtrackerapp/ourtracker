@@ -12,10 +12,12 @@ const config = {
   firestoreDatabaseId: import.meta.env.VITE_FIREBASE_DATABASE_ID || firebaseConfig.firestoreDatabaseId || 'ai-studio-df43d03e-610d-472a-82b9-07b668c9d5ea',
 };
 
+const databaseId = import.meta.env.VITE_FIREBASE_DATABASE_ID || firebaseConfig.firestoreDatabaseId;
+
 const app = !getApps().length ? initializeApp(config) : getApp();
 
-export const db = config.firestoreDatabaseId
-  ? getFirestore(app, config.firestoreDatabaseId)
+export const db = (databaseId && databaseId !== '(default)' && databaseId !== 'default')
+  ? getFirestore(app, databaseId)
   : getFirestore(app);
 
 export { app };

@@ -24,14 +24,14 @@ This application is fully prepared and optimized for serverless deployment on **
    - `ALPACA_API_SECRET_KEY` = (Definido nas tuas definições Alpaca)
    - `GEMINI_API_KEY` = (A tua chave Gemini API)
 
-   ### 🔥 Firebase & Firestore Database
-   - `VITE_FIREBASE_PROJECT_ID` = `gen-lang-client-0136413843`
-   - `VITE_FIREBASE_APP_ID` = `1:72228334805:web:48ef515b7cbf488293465c`
-   - `VITE_FIREBASE_API_KEY` = `AIzaSyBwWkHo-psher-xQUkFZCiRi2xUZIoE2vA`
-   - `VITE_FIREBASE_AUTH_DOMAIN` = `gen-lang-client-0136413843.firebaseapp.com`
-   - `VITE_FIREBASE_DATABASE_ID` = `ai-studio-df43d03e-610d-472a-82b9-07b668c9d5ea`
-   - `VITE_FIREBASE_STORAGE_BUCKET` = `gen-lang-client-0136413843.firebasestorage.app`
-   - `VITE_FIREBASE_MESSAGING_SENDER_ID` = `72228334805`
+   ### 🔥 Firebase & Firestore Database (Para o teu projeto: ourtracker-15a80)
+   - `VITE_FIREBASE_PROJECT_ID` = `ourtracker-15a80`
+   - `VITE_FIREBASE_APP_ID` = *(A tua App ID de: Firebase Console -> Project Settings -> Web App)*
+   - `VITE_FIREBASE_API_KEY` = *(A tua API Key de: Firebase Console -> Project Settings -> Web App)*
+   - `VITE_FIREBASE_AUTH_DOMAIN` = `ourtracker-15a80.firebaseapp.com`
+   - `VITE_FIREBASE_DATABASE_ID` = `(default)`
+   - `VITE_FIREBASE_STORAGE_BUCKET` = `ourtracker-15a80.firebasestorage.app`
+   - `VITE_FIREBASE_MESSAGING_SENDER_ID` = *(O teu Messaging Sender ID)*
 
 4. **Architecture Overview**:
    - `api/index.ts` re-encaminha todas as chamadas de backend `/api/*` para a Serverless Function Express.

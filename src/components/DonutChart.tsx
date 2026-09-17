@@ -294,7 +294,7 @@ export const DonutChart: React.FC<DonutChartProps> = ({
                 {/* Secondary Metric: Monetary Value */}
                 <span className="text-xs font-semibold text-slate-500 truncate max-w-[190px]">
                   {selectedPosition.isError
-                    ? 'Cotação Indisponível'
+                    ? (selectedPosition.errorMessage || 'api "Erro"')
                     : `${currencySymbol}${selectedPosition.value.toLocaleString('de-DE', {
                         minimumFractionDigits: 2,
                         maximumFractionDigits: 2,

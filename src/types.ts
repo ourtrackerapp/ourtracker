@@ -98,4 +98,4 @@ export interface PdfParseResponse {
   rawTextPreview?: string;
 }
 
-export type TabType = 'home' | 'allocation' | 'settings';
+export type TabType = 'home' | 'allocation' | 'goal' | 'settings';

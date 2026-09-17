@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState, useCallback } from 'react';
+import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import { HomeChartPoint, PeriodOption } from '../services/homeChartService';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -6,32 +6,26 @@ interface Props {
   points: HomeChartPoint[];
   period: PeriodOption;
   showSp500: boolean;
-  showNasdaq: boolean;
-  showRussell: boolean;
   onToggleSp500: () => void;
-  onToggleNasdaq: () => void;
-  onToggleRussell: () => void;
   onCloseBenchmarks?: () => void;
   onPointHover: (point: HomeChartPoint | null) => void;
 }
 
 const COLOR_PORTFOLIO = '#2563EB'; // Blue
 const COLOR_SP500 = '#EAB308'; // Yellow
-const COLOR_NASDAQ = '#16A34A'; // Green
-const COLOR_RUSSELL = '#9333EA'; // Purple 600
 
 export const HomePerformanceChart: React.FC<Props> = ({
-  points,
+  points: rawPoints,
   period,
   showSp500,
-  showNasdaq,
-  showRussell,
   onToggleSp500,
-  onToggleNasdaq,
-  onToggleRussell,
   onCloseBenchmarks,
   onPointHover,
 }) => {
+  const points = useMemo(() => {
+    return [...rawPoints].sort((a, b) => a.timestamp - b.timestamp);
+  }, [rawPoints]);
+
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -79,14 +73,6 @@ export const HomePerformanceChart: React.FC<Props> = ({
         minPct = Math.min(minPct, p.sp500.returnPercent);
         maxPct = Math.max(maxPct, p.sp500.returnPercent);
       }
-      if (showNasdaq && p.nasdaq) {
-        minPct = Math.min(minPct, p.nasdaq.returnPercent);
-        maxPct = Math.max(maxPct, p.nasdaq.returnPercent);
-      }
-      if (showRussell && p.russell) {
-        minPct = Math.min(minPct, p.russell.returnPercent);
-        maxPct = Math.max(maxPct, p.russell.returnPercent);
-      }
     });
 
     if (minPct === Infinity || maxPct === -Infinity) {
@@ -109,18 +95,32 @@ export const HomePerformanceChart: React.FC<Props> = ({
       return height - paddingBottom - norm * chartHeight;
     };
 
-    const getX = (index: number, timestamp: number) => {
+    const getX = (index: number) => {
       if (points.length <= 1) return width / 2;
-      
       if (period === '1D') {
-        const date = new Date(timestamp);
-        const startOfDay = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 0, 0, 0, 0);
-        const endOfDay = startOfDay + 24 * 60 * 60 * 1000;
-        return ((timestamp - startOfDay) / (endOfDay - startOfDay)) * width;
+        const pt = points[index];
+        if (pt && pt.timestamp) {
+          const d = new Date(pt.timestamp);
+          const startOfDay = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0).getTime();
+          const endOfDay = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999).getTime();
+          const ratio = Math.max(0, Math.min(1, (pt.timestamp - startOfDay) / (endOfDay - startOfDay)));
+          return ratio * width;
+        }
       }
-      
       return (index / (points.length - 1)) * width;
     };
+
+    // Draw Baseline (0% return)
+    const zeroY = getY(0);
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(0, zeroY);
+    ctx.lineTo(width, zeroY);
+    ctx.strokeStyle = '#CBD5E1'; // Slate 300
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]); // Dashed line
+    ctx.stroke();
+    ctx.restore();
 
     // Draw helper line for a series
     const drawSeries = (
@@ -142,7 +142,7 @@ export const HomePerformanceChart: React.FC<Props> = ({
           return;
         }
 
-        const x = getX(i, pt.timestamp);
+        const x = getX(i);
         const y = getY(val);
 
         if (lastX === null || lastY === null) {
@@ -169,41 +169,25 @@ export const HomePerformanceChart: React.FC<Props> = ({
       });
     };
 
-    // 1. Draw S&P 500 (Yellow) if active - more transparent than portfolio
+    // 1. Draw S&P 500 (Yellow) if active
     if (showSp500) {
       ctx.save();
-      ctx.globalAlpha = 0.35;
-      drawSeries((p) => p.sp500?.returnPercent, COLOR_SP500, 1.6);
-      ctx.restore();
-    }
-
-    // 2. Draw Nasdaq (Green) if active - more transparent than portfolio
-    if (showNasdaq) {
-      ctx.save();
-      ctx.globalAlpha = 0.35;
-      drawSeries((p) => p.nasdaq?.returnPercent, COLOR_NASDAQ, 1.6);
-      ctx.restore();
-    }
-
-    // 3. Draw Russell (Purple) if active - more transparent than portfolio
-    if (showRussell) {
-      ctx.save();
-      ctx.globalAlpha = 0.35;
-      drawSeries((p) => p.russell?.returnPercent, COLOR_RUSSELL, 1.6);
+      ctx.globalAlpha = 1.0;
+      drawSeries((p) => p.sp500?.returnPercent, COLOR_SP500, 1.8);
       ctx.restore();
     }
 
     // 4. Draw Portfolio (Blue) - always main line, thick & opaque
     ctx.save();
     ctx.globalAlpha = 1.0;
-    drawSeries((p) => p.portfolio?.returnPercent, COLOR_PORTFOLIO, 2.5);
+    drawSeries((p) => p.portfolio?.returnPercent, COLOR_PORTFOLIO, 2.0);
     ctx.restore();
 
     // 5. Draw Crosshair / Active Point during drag
     const activeIdx = activeIndexRef.current;
     if (activeIdx !== null && activeIdx >= 0 && activeIdx < points.length) {
       const pt = points[activeIdx];
-      const x = getX(activeIdx, pt.timestamp);
+      const x = getX(activeIdx);
 
       // Draw thin vertical dashed line (full height)
       ctx.save();
@@ -227,7 +211,7 @@ export const HomePerformanceChart: React.FC<Props> = ({
     }
 
     ctx.restore();
-  }, [points, showSp500, showNasdaq, showRussell]);
+  }, [points, period, showSp500]);
 
   // Handle Resize & Points change
   useEffect(() => {
@@ -251,8 +235,26 @@ export const HomePerformanceChart: React.FC<Props> = ({
     const rect = container.getBoundingClientRect();
     const x = Math.max(0, Math.min(clientX - rect.left, rect.width));
     const ratio = rect.width > 0 ? x / rect.width : 0;
-    const index = Math.round(ratio * (points.length - 1));
-    const clampedIndex = Math.max(0, Math.min(index, points.length - 1));
+    let clampedIndex = 0;
+    if (period === '1D' && points.length > 0) {
+      const firstPt = points[0];
+      const d = new Date(firstPt.timestamp || Date.now());
+      const startOfDay = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0).getTime();
+      const endOfDay = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999).getTime();
+      const targetTime = startOfDay + ratio * (endOfDay - startOfDay);
+
+      let minDiff = Infinity;
+      points.forEach((p, idx) => {
+        const diff = Math.abs(p.timestamp - targetTime);
+        if (diff < minDiff) {
+          minDiff = diff;
+          clampedIndex = idx;
+        }
+      });
+    } else {
+      const index = Math.round(ratio * (points.length - 1));
+      clampedIndex = Math.max(0, Math.min(index, points.length - 1));
+    }
 
     if (activeIndexRef.current !== clampedIndex) {
       activeIndexRef.current = clampedIndex;
@@ -292,11 +294,11 @@ export const HomePerformanceChart: React.FC<Props> = ({
   };
 
   return (
-    <div className="w-full flex flex-col">
+    <div className="w-full flex flex-col shrink-0">
       {/* 1. Canvas Interactive Container */}
       <div
         ref={containerRef}
-        className="relative w-full h-[150px] touch-none select-none cursor-crosshair"
+        className="relative w-full h-[200px] shrink-0 touch-none select-none cursor-crosshair"
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
@@ -306,82 +308,18 @@ export const HomePerformanceChart: React.FC<Props> = ({
       </div>
 
       {/* 2. Bottom Right Benchmark Bar */}
-      <div className="w-full flex justify-end items-center px-4 pt-0 pb-1">
-        <AnimatePresence mode="wait">
-          {!isBenchmarkExpanded ? (
-            <motion.button
-              key="btn"
-              initial={{ opacity: 0, x: -10 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -10 }}
-              transition={{ duration: 0.15 }}
-              type="button"
-              onClick={() => setIsBenchmarkExpanded(true)}
-              className="text-sm font-medium text-slate-400 hover:text-slate-600 transition-colors flex items-center gap-1.5 focus:outline-none"
-            >
-              <span>+</span>
-              <span>Benchmark</span>
-            </motion.button>
-          ) : (
-            <motion.div
-              key="menu"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 20 }}
-              transition={{ duration: 0.15 }}
-              className="w-full flex items-center justify-between"
-            >
-              {/* Expanded Benchmark Selectors on Left */}
-              <div className="flex items-center gap-3">
-                {/* SP500 Button */}
-                <button
-                  type="button"
-                  onClick={onToggleSp500}
-                  className={`text-sm font-semibold transition-colors focus:outline-none px-2 py-1 rounded-full ${
-                    showSp500 ? 'bg-yellow-50 text-yellow-700' : 'text-slate-400 hover:text-slate-600'
-                  }`}
-                >
-                  SP500
-                </button>
-
-                {/* Nasdaq Button */}
-                <button
-                  type="button"
-                  onClick={onToggleNasdaq}
-                  className={`text-sm font-semibold transition-colors focus:outline-none px-2 py-1 rounded-full ${
-                    showNasdaq ? 'bg-green-50 text-green-700' : 'text-slate-400 hover:text-slate-600'
-                  }`}
-                >
-                  NASDAQ
-                </button>
-
-                {/* Russell Button */}
-                <button
-                  type="button"
-                  onClick={onToggleRussell}
-                  className={`text-sm font-semibold transition-colors focus:outline-none px-2 py-1 rounded-full ${
-                    showRussell ? 'bg-purple-50 text-purple-700' : 'text-slate-400 hover:text-slate-600'
-                  }`}
-                >
-                  RUSSELL
-                </button>
-              </div>
-
-              {/* Plain Close Symbol × on Far Right */}
-              <button
-                type="button"
-                onClick={() => {
-                  onCloseBenchmarks?.();
-                  setIsBenchmarkExpanded(false);
-                }}
-                className="text-base font-normal text-slate-500 hover:text-slate-800 focus:outline-none px-1"
-              >
-                ×
-              </button>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
+      {!showSp500 && (
+        <div className="w-full flex justify-end items-center px-4 pt-0 pb-1">
+          <button
+            type="button"
+            onClick={onToggleSp500}
+            className="text-sm font-medium text-slate-400 hover:text-slate-600 transition-colors flex items-center gap-1.5 focus:outline-none"
+          >
+            <span>+</span>
+            <span>Benchmark</span>
+          </button>
+        </div>
+      )}
     </div>
   );
 };

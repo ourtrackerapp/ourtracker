@@ -1,5 +1,5 @@
 // Multi-API Currency Conversion Service
-// Uses all available free and public FX APIs in cascade with redundancy
+// Uses primary and secondary FX APIs for redundancy
 
 interface CachedRate {
   rate: number;
@@ -8,7 +8,7 @@ interface CachedRate {
 }
 
 const fxCache = new Map<string, CachedRate>();
-const FX_CACHE_TTL = 5 * 60 * 1000; // 5 minutes cache
+const FX_CACHE_TTL = 3 * 60 * 60 * 1000; // 3 hours cache (180 minutes)
 
 export interface FxResult {
   from: string;
@@ -40,35 +40,8 @@ async function fetchFromOpenErApi(from: string, to: string): Promise<number> {
   throw new Error('Invalid rate from OpenErApi');
 }
 
-// 3. Fawaz Ahmed Open Currency API (JSDelivr CDN)
-async function fetchFromJsDelivr(from: string, to: string): Promise<number> {
-  const url = `https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/${from.toLowerCase()}.json`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
-  if (!res.ok) throw new Error(`JsDelivr Currency error ${res.status}`);
-  const data = await res.json();
-  const baseObj = data?.[from.toLowerCase()];
-  const rate = baseObj?.[to.toLowerCase()];
-  if (typeof rate === 'number') return rate;
-  throw new Error('Invalid rate from JsDelivr');
-}
-
-// 4. Yahoo Finance FX
-async function fetchFromYahooFx(from: string, to: string): Promise<number> {
-  const pair = `${from}${to}=X`;
-  const url = `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(pair)}?interval=1d&range=1d`;
-  const res = await fetch(url, {
-    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
-    signal: AbortSignal.timeout(4000),
-  });
-  if (!res.ok) throw new Error(`Yahoo FX error ${res.status}`);
-  const json = await res.json();
-  const price = json?.chart?.result?.[0]?.meta?.regularMarketPrice;
-  if (typeof price === 'number') return price;
-  throw new Error('Invalid rate from Yahoo FX');
-}
-
 /**
- * Get conversion rate from one currency to another using all available APIs in cascade
+ * Get conversion rate from one currency to another using primary and backup APIs
  */
 export async function getExchangeRate(from: string, to: string = 'EUR'): Promise<FxResult> {
   const cleanFrom = from.trim().toUpperCase();
@@ -103,8 +76,6 @@ export async function getExchangeRate(from: string, to: string = 'EUR'): Promise
   const providers = [
     { name: 'Frankfurter (Banco Central Europeu)', fn: () => fetchFromFrankfurter(effectiveFrom, cleanTo) },
     { name: 'Open Exchange Rates (open.er-api)', fn: () => fetchFromOpenErApi(effectiveFrom, cleanTo) },
-    { name: 'JSDelivr Currency Global API', fn: () => fetchFromJsDelivr(effectiveFrom, cleanTo) },
-    { name: 'Yahoo Finance FX', fn: () => fetchFromYahooFx(effectiveFrom, cleanTo) },
   ];
 
   let lastError: Error | null = null;
@@ -124,7 +95,7 @@ export async function getExchangeRate(from: string, to: string = 'EUR'): Promise
       }
     } catch (err: any) {
       lastError = err;
-      // Continue to next provider in cascade
+      // Continue to next provider
     }
   }
 
@@ -143,7 +114,7 @@ export async function getExchangeRate(from: string, to: string = 'EUR'): Promise
     from: cleanFrom,
     to: cleanTo,
     rate: isPence ? fallbackRate / 100 : fallbackRate,
-    provider: 'Taxa de Referência (Fallback)',
+    provider: 'api moeda off',
     timestamp: Date.now(),
   };
 }

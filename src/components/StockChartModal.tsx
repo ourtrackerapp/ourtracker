@@ -4,7 +4,6 @@ import {
   ChevronLeft,
   AlertCircle,
   RefreshCw,
-  Info,
   X,
   DollarSign,
   Scale,
@@ -103,94 +102,6 @@ const TIME_RANGES: Array<{ key: ChartTimeRange; label: string }> = [
   { key: 'max', label: 'Tudo' },
 ];
 
-interface MetricExplanation {
-  title: string;
-  badge?: string;
-  description: string;
-  interpretation: string;
-}
-
-const METRIC_EXPLANATIONS: Record<string, MetricExplanation> = {
-  dayRange: {
-    title: 'Máximo e Mínimo do Dia',
-    badge: 'Volatilidade Diária',
-    description: 'Representa a variação entre o preço mais alto e o mais baixo a que a ação foi negociada durante a sessão de hoje.',
-    interpretation: 'Permite avaliar a amplitude das oscilações e a liquidez imediata no mercado ao longo do dia.',
-  },
-  fiftyTwoWeekRange: {
-    title: 'Intervalo de 52 Semanas (1 Ano)',
-    badge: '12 Meses',
-    description: 'Mostra o valor mais baixo e o mais alto atingidos pela cotação nos últimos 12 meses.',
-    interpretation: 'A barra visual indica a posição do preço atual em relação ao mínimo (0%) e máximo (100%) anual, ajudando a identificar momentos de desconto ou topos históricos.',
-  },
-  pe: {
-    title: 'P/E (Price-to-Earnings)',
-    badge: 'Preço / Lucro',
-    description: 'Compara o preço atual da ação com os lucros anuais gerados pela empresa por cada ação.',
-    interpretation: 'Indica quantos euros os investidores pagam por cada 1€ de lucro. Um P/E moderado pode indicar bom valor, enquanto um P/E alto sugere grandes expetativas de crescimento.',
-  },
-  pb: {
-    title: 'P/B (Price-to-Book)',
-    badge: 'Preço / Valor Contabilístico',
-    description: 'Compara o valor de mercado da empresa com o seu valor patrimonial líquido (ativos reais menos dívidas).',
-    interpretation: 'Um valor inferior a 1.0 pode indicar que a ação está a ser negociada abaixo do valor dos seus ativos em balanço.',
-  },
-  ps: {
-    title: 'P/S (Price-to-Sales)',
-    badge: 'Preço / Vendas',
-    description: 'Mede a relação entre o preço da ação e as receitas totais de vendas anuais geradas por ação.',
-    interpretation: 'Essencial para avaliar empresas em fase de forte expansão que ainda reinvestem todos os ganhos e não apresentam lucro líquido positivo.',
-  },
-  eps: {
-    title: 'EPS (Earnings Per Share)',
-    badge: 'Lucro por Ação',
-    description: 'Representa a parcela do lucro líquido da empresa que corresponde a cada ação emitida.',
-    interpretation: 'Quanto maior e mais consistente for o crescimento do EPS ao longo do tempo, maior é a rentabilidade real gerada pela empresa.',
-  },
-  beta: {
-    title: 'Beta (Sensibilidade ao Mercado)',
-    badge: 'Volatilidade',
-    description: 'Mede a intensidade com que a cotação oscila em relação ao mercado de ações global (referência neutra = 1.0).',
-    interpretation: 'Beta > 1.0 indica maior volatilidade (ganha mais nas subidas, cai mais nas descidas). Beta < 1.0 reflete uma ação mais defensiva e estável.',
-  },
-  targetPrice: {
-    title: 'Preço-Alvo dos Analistas',
-    badge: 'Estimativa 12 Meses',
-    description: 'Média das estimativas de preço justo projetadas pelas principais casas de investimento e analistas do mercado.',
-    interpretation: 'Permite verificar se a cotação atual está com potencial de valorização em relação ao consenso dos especialistas.',
-  },
-  recommendation: {
-    title: 'Recomendação dos Analistas',
-    badge: 'Consenso de Mercado',
-    description: 'Consenso agregado das classificações emitidas pelos analistas de mercado.',
-    interpretation: 'Classificações típicas: Compra Forte, Compra, Manter, Desempenho Inferior ou Venda.',
-  },
-  dividendYield: {
-    title: 'Dividend Yield (Rendimento)',
-    badge: 'Retorno Anual',
-    description: 'Percentagem do valor da ação que a empresa devolve aos acionistas em dinheiro ao longo de um ano.',
-    interpretation: 'Representa o rendimento passivo direto em dividendos recebido pelo investimento.',
-  },
-  dividendRate: {
-    title: 'Valor Anual do Dividendo',
-    badge: 'Montante por Ação',
-    description: 'Valor total em dinheiro pago por cada ação ao longo de um ano completo.',
-    interpretation: 'Multiplicando este valor pelo teu número de ações sabes o total em euros que recebes por ano.',
-  },
-  exDividendDate: {
-    title: 'Data Ex-Dividendo',
-    badge: 'Data Limite',
-    description: 'A data a partir da qual as compras já não dão direito ao dividendo anunciado mais recente.',
-    interpretation: 'Para teres direito a receber o próximo dividendo, deves deter a ação antes desta data.',
-  },
-  earningsDate: {
-    title: 'Próximos Resultados',
-    badge: 'Relatório Trimestral',
-    description: 'Data prevista para a apresentação pública do próximo relatório de contas e resultados trimestrais.',
-    interpretation: 'Momento de grande interesse no mercado que pode gerar movimentos expressivos na cotação.',
-  },
-};
-
 export const StockChartModal: React.FC<StockChartModalProps> = ({
   position,
   holding,
@@ -240,11 +151,67 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
 
   const currencySymbol = isUsd ? '$' : '€';
 
-  // Active Metric Modal for explanation
-  const [selectedExplanationKey, setSelectedExplanationKey] = useState<string | null>(null);
-
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [svgDimensions, setSvgDimensions] = useState({ width: 360, height: 260 });
+
+  // Auto-adjust default range based on earliest purchase date when modal opens
+  useEffect(() => {
+    if (isOpen && holding) {
+      let earliestTs = Date.now();
+      let hasPurchases = false;
+
+      const checkAndSetEarliest = (val: any) => {
+        if (!val) return;
+        let t = NaN;
+        if (typeof val === 'string') {
+          t = Date.parse(val);
+          if (isNaN(t)) {
+            // Try parse PT format "DD/MM/YYYY"
+            const parts = val.split('/');
+            if (parts.length === 3) {
+              const d = new Date(parseInt(parts[2], 10), parseInt(parts[1], 10) - 1, parseInt(parts[0], 10));
+              t = d.getTime();
+            }
+          }
+        } else if (val instanceof Date) {
+          t = val.getTime();
+        } else if (typeof val === 'number') {
+          t = val;
+        }
+        if (!isNaN(t) && t < earliestTs) {
+          earliestTs = t;
+          hasPurchases = true;
+        }
+      };
+
+      if (Array.isArray(holding.purchases) && holding.purchases.length > 0) {
+        holding.purchases.forEach(p => checkAndSetEarliest(p.date));
+      } else if (holding.createdAt) {
+        checkAndSetEarliest(holding.createdAt);
+      }
+
+      if (hasPurchases) {
+        const daysAgo = (Date.now() - earliestTs) / (1000 * 60 * 60 * 24);
+        if (daysAgo <= 1) {
+          setSelectedRange('1d');
+        } else if (daysAgo <= 7) {
+          setSelectedRange('1w');
+        } else if (daysAgo <= 30) {
+          setSelectedRange('1m');
+        } else if (daysAgo <= 90) {
+          setSelectedRange('3m');
+        } else if (daysAgo <= 180) {
+          setSelectedRange('6m');
+        } else if (daysAgo <= 365) {
+          setSelectedRange('1y');
+        } else {
+          setSelectedRange('max');
+        }
+      } else {
+        setSelectedRange('1m');
+      }
+    }
+  }, [isOpen, holding]);
 
   // Fetch chart data when position or range changes
   useEffect(() => {
@@ -317,11 +284,11 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
   // All purchase records for this holding
   const purchaseRecords: PurchaseRecord[] = useMemo(() => {
     if (!holding) return [];
+    let list: PurchaseRecord[] = [];
     if (Array.isArray(holding.purchases) && holding.purchases.length > 0) {
-      return holding.purchases;
-    }
-    if (holding.createdAt) {
-      return [
+      list = holding.purchases;
+    } else if (holding.createdAt) {
+      list = [
         {
           id: 'initial-purchase',
           date: holding.createdAt,
@@ -330,7 +297,39 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
         },
       ];
     }
-    return [];
+    
+    // Normalize dates to numeric timestamps
+    return list.map(p => {
+      const rawDate: any = p.date;
+      let normalizedDate = Date.now();
+      if (typeof rawDate === 'string') {
+        const parsed = Date.parse(rawDate);
+        if (!isNaN(parsed)) {
+          normalizedDate = parsed;
+        } else {
+          // Try parse PT format "DD/MM/YYYY" or similar
+          const parts = rawDate.split('/');
+          if (parts.length === 3) {
+            const day = parseInt(parts[0], 10);
+            const month = parseInt(parts[1], 10) - 1;
+            const year = parseInt(parts[2], 10);
+            const d = new Date(year, month, day);
+            if (!isNaN(d.getTime())) {
+              normalizedDate = d.getTime();
+            }
+          }
+        }
+      } else if (rawDate instanceof Date) {
+        normalizedDate = rawDate.getTime();
+      } else if (typeof rawDate === 'number') {
+        normalizedDate = rawDate;
+      }
+
+      return {
+        ...p,
+        date: normalizedDate
+      };
+    });
   }, [holding, position?.currentPrice]);
 
   // Find earliest purchase date
@@ -743,8 +742,6 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
     metrics?.exDividendDate != null;
   const hasEarnings = metrics?.earningsDate != null;
 
-  const activeExplanation = selectedExplanationKey ? METRIC_EXPLANATIONS[selectedExplanationKey] : null;
-
   return (
     <AnimatePresence>
       <motion.div
@@ -1129,13 +1126,9 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
             {(hasDayRange || has52wRange) && (
               <div className="bg-slate-50/80 border border-slate-100 rounded-2xl p-3.5 space-y-3">
                 {hasDayRange && (
-                  <div
-                    onClick={() => setSelectedExplanationKey('dayRange')}
-                    className="flex items-center justify-between cursor-pointer active:opacity-75 transition-opacity"
-                  >
-                    <div className="flex items-center gap-1.5 text-xs font-bold text-slate-500">
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs font-bold text-slate-500">
                       <span>Máx / Mín Hoje</span>
-                      <Info className="w-3 h-3 text-slate-400" />
                     </div>
                     <div className="text-xs font-black text-slate-800 tabular-nums">
                       {currencySymbol}{(isUsd ? (metrics?.dayLow ?? metrics?.dayLowEur) : metrics?.dayLowEur)?.toFixed(2)} - {currencySymbol}{(isUsd ? (metrics?.dayHigh ?? metrics?.dayHighEur) : metrics?.dayHighEur)?.toFixed(2)}
@@ -1144,15 +1137,9 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                 )}
 
                 {has52wRange && (
-                  <div
-                    onClick={() => setSelectedExplanationKey('fiftyTwoWeekRange')}
-                    className="pt-2 border-t border-slate-200/60 cursor-pointer active:opacity-75 transition-opacity"
-                  >
+                  <div className="pt-2 border-t border-slate-200/60">
                     <div className="flex items-center justify-between text-xs font-bold text-slate-500 mb-1.5">
-                      <div className="flex items-center gap-1.5">
-                        <span>Intervalo 52 Semanas</span>
-                        <Info className="w-3 h-3 text-slate-400" />
-                      </div>
+                      <span>Intervalo 52 Semanas</span>
                       <span className="text-[11px] font-black text-sky-600">
                         {metrics?.fiftyTwoWeekRangePercent != null
                           ? `${metrics.fiftyTwoWeekRangePercent.toFixed(0)}% da amplitude`
@@ -1186,13 +1173,9 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                 </div>
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                   {metrics?.pe != null && (
-                    <div
-                      onClick={() => setSelectedExplanationKey('pe')}
-                      className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3 cursor-pointer active:bg-slate-100 transition-colors"
-                    >
-                      <div className="flex items-center justify-between text-[11px] font-bold text-slate-400">
+                    <div className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3">
+                      <div className="text-[11px] font-bold text-slate-400">
                         <span>P/E (Preço/Lucro)</span>
-                        <Info className="w-3 h-3 text-slate-300" />
                       </div>
                       <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
                         {metrics.pe.toFixed(2)}
@@ -1201,13 +1184,9 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                   )}
 
                   {metrics?.pb != null && (
-                    <div
-                      onClick={() => setSelectedExplanationKey('pb')}
-                      className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3 cursor-pointer active:bg-slate-100 transition-colors"
-                    >
-                      <div className="flex items-center justify-between text-[11px] font-bold text-slate-400">
+                    <div className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3">
+                      <div className="text-[11px] font-bold text-slate-400">
                         <span>P/B (Preço/Valor)</span>
-                        <Info className="w-3 h-3 text-slate-300" />
                       </div>
                       <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
                         {metrics.pb.toFixed(2)}
@@ -1216,13 +1195,9 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                   )}
 
                   {metrics?.ps != null && (
-                    <div
-                      onClick={() => setSelectedExplanationKey('ps')}
-                      className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3 cursor-pointer active:bg-slate-100 transition-colors"
-                    >
-                      <div className="flex items-center justify-between text-[11px] font-bold text-slate-400">
+                    <div className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3">
+                      <div className="text-[11px] font-bold text-slate-400">
                         <span>P/S (Preço/Vendas)</span>
-                        <Info className="w-3 h-3 text-slate-300" />
                       </div>
                       <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
                         {metrics.ps.toFixed(2)}
@@ -1231,13 +1206,9 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                   )}
 
                   {(isUsd ? (metrics?.eps ?? metrics?.epsEur) : metrics?.epsEur) != null && (
-                    <div
-                      onClick={() => setSelectedExplanationKey('eps')}
-                      className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3 cursor-pointer active:bg-slate-100 transition-colors"
-                    >
-                      <div className="flex items-center justify-between text-[11px] font-bold text-slate-400">
+                    <div className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3">
+                      <div className="text-[11px] font-bold text-slate-400">
                         <span>EPS (Lucro/Ação)</span>
-                        <Info className="w-3 h-3 text-slate-300" />
                       </div>
                       <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
                         {currencySymbol}{(isUsd ? (metrics?.eps ?? metrics?.epsEur) : metrics?.epsEur)?.toFixed(2)}
@@ -1246,13 +1217,9 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                   )}
 
                   {metrics?.beta != null && (
-                    <div
-                      onClick={() => setSelectedExplanationKey('beta')}
-                      className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3 cursor-pointer active:bg-slate-100 transition-colors"
-                    >
-                      <div className="flex items-center justify-between text-[11px] font-bold text-slate-400">
+                    <div className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3">
+                      <div className="text-[11px] font-bold text-slate-400">
                         <span>Beta (Volatilidade)</span>
-                        <Info className="w-3 h-3 text-slate-300" />
                       </div>
                       <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
                         {metrics.beta.toFixed(2)}
@@ -1271,13 +1238,9 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   {(isUsd ? (metrics?.targetPrice ?? metrics?.targetPriceEur) : metrics?.targetPriceEur) != null && (
-                    <div
-                      onClick={() => setSelectedExplanationKey('targetPrice')}
-                      className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3 cursor-pointer active:bg-slate-100 transition-colors"
-                    >
-                      <div className="flex items-center justify-between text-[11px] font-bold text-slate-400">
+                    <div className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3">
+                      <div className="text-[11px] font-bold text-slate-400">
                         <span>Preço-Alvo Médio</span>
-                        <Info className="w-3 h-3 text-slate-300" />
                       </div>
                       <div className="text-base font-black text-sky-700 mt-1 tabular-nums">
                         {currencySymbol}{(isUsd ? (metrics?.targetPrice ?? metrics?.targetPriceEur) : metrics?.targetPriceEur)?.toFixed(2)}
@@ -1286,13 +1249,9 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                   )}
 
                   {metrics?.recommendation != null && (
-                    <div
-                      onClick={() => setSelectedExplanationKey('recommendation')}
-                      className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3 cursor-pointer active:bg-slate-100 transition-colors"
-                    >
-                      <div className="flex items-center justify-between text-[11px] font-bold text-slate-400">
+                    <div className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3">
+                      <div className="text-[11px] font-bold text-slate-400">
                         <span>Recomendação</span>
-                        <Info className="w-3 h-3 text-slate-300" />
                       </div>
                       <div className="text-sm font-black text-emerald-700 mt-1.5 truncate">
                         {metrics.recommendation}
@@ -1311,13 +1270,9 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   {metrics?.dividendYield != null && (
-                    <div
-                      onClick={() => setSelectedExplanationKey('dividendYield')}
-                      className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3 cursor-pointer active:bg-slate-100 transition-colors"
-                    >
-                      <div className="flex items-center justify-between text-[11px] font-bold text-slate-400">
+                    <div className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3">
+                      <div className="text-[11px] font-bold text-slate-400">
                         <span>Dividend Yield</span>
-                        <Info className="w-3 h-3 text-slate-300" />
                       </div>
                       <div className="text-base font-black text-emerald-600 mt-1 tabular-nums">
                         {metrics.dividendYield.toFixed(2)}%
@@ -1326,13 +1281,9 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                   )}
 
                   {(isUsd ? (metrics?.dividendRate ?? metrics?.dividendRateEur) : metrics?.dividendRateEur) != null && (
-                    <div
-                      onClick={() => setSelectedExplanationKey('dividendRate')}
-                      className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3 cursor-pointer active:bg-slate-100 transition-colors"
-                    >
-                      <div className="flex items-center justify-between text-[11px] font-bold text-slate-400">
+                    <div className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3">
+                      <div className="text-[11px] font-bold text-slate-400">
                         <span>Dividendo / Ação</span>
-                        <Info className="w-3 h-3 text-slate-300" />
                       </div>
                       <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
                         {currencySymbol}{(isUsd ? (metrics?.dividendRate ?? metrics?.dividendRateEur) : metrics?.dividendRateEur)?.toFixed(2)}
@@ -1341,13 +1292,9 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                   )}
 
                   {metrics?.exDividendDate != null && (
-                    <div
-                      onClick={() => setSelectedExplanationKey('exDividendDate')}
-                      className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3 cursor-pointer active:bg-slate-100 transition-colors"
-                    >
-                      <div className="flex items-center justify-between text-[11px] font-bold text-slate-400">
+                    <div className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3">
+                      <div className="text-[11px] font-bold text-slate-400">
                         <span>Data Ex-Dividendo</span>
-                        <Info className="w-3 h-3 text-slate-300" />
                       </div>
                       <div className="text-xs font-black text-slate-800 mt-1.5 truncate">
                         {metrics.exDividendDate}
@@ -1356,13 +1303,9 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                   )}
 
                   {metrics?.earningsDate != null && (
-                    <div
-                      onClick={() => setSelectedExplanationKey('earningsDate')}
-                      className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3 cursor-pointer active:bg-slate-100 transition-colors"
-                    >
-                      <div className="flex items-center justify-between text-[11px] font-bold text-slate-400">
+                    <div className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3">
+                      <div className="text-[11px] font-bold text-slate-400">
                         <span>Próx. Resultados</span>
-                        <Info className="w-3 h-3 text-slate-300" />
                       </div>
                       <div className="text-xs font-black text-sky-700 mt-1.5 truncate">
                         {metrics.earningsDate}
@@ -1374,72 +1317,6 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
             )}
           </div>
         </div>
-
-        {/* Bottom Sheet Modal for Metric Explanation */}
-        <AnimatePresence>
-          {activeExplanation && (
-            <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/40 backdrop-blur-xs">
-              <motion.div
-                initial={{ y: '100%' }}
-                animate={{ y: 0 }}
-                exit={{ y: '100%' }}
-                transition={{ type: 'spring', damping: 26, stiffness: 280 }}
-                className="w-full max-w-lg bg-white rounded-t-3xl p-6 shadow-2xl border-t border-slate-100 max-h-[80vh] overflow-y-auto"
-              >
-                <div className="flex items-start justify-between pb-3 border-b border-slate-100">
-                  <div>
-                    {activeExplanation.badge && (
-                      <span className="text-[10px] font-bold text-sky-600 bg-sky-50 px-2 py-0.5 rounded-md uppercase tracking-wider">
-                        {activeExplanation.badge}
-                      </span>
-                    )}
-                    <h3 className="text-lg font-black text-slate-900 mt-1">
-                      {activeExplanation.title}
-                    </h3>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedExplanationKey(null)}
-                    aria-label="Fechar"
-                    className="p-1.5 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-100 cursor-pointer transition-colors"
-                  >
-                    <X className="w-5 h-5" />
-                  </button>
-                </div>
-
-                <div className="mt-4 space-y-4 text-sm">
-                  <div>
-                    <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">
-                      O que significa
-                    </h4>
-                    <p className="text-slate-700 leading-relaxed font-medium">
-                      {activeExplanation.description}
-                    </p>
-                  </div>
-
-                  <div className="bg-sky-50/70 border border-sky-100 rounded-2xl p-4">
-                    <h4 className="text-xs font-bold text-sky-800 uppercase tracking-wider mb-1">
-                      Como Interpretar
-                    </h4>
-                    <p className="text-sky-900 text-xs leading-relaxed font-medium">
-                      {activeExplanation.interpretation}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="mt-6">
-                  <button
-                    type="button"
-                    onClick={() => setSelectedExplanationKey(null)}
-                    className="w-full py-3 bg-slate-900 text-white font-bold text-sm rounded-2xl active:scale-[0.98] transition-transform cursor-pointer"
-                  >
-                    Entendido
-                  </button>
-                </div>
-              </motion.div>
-            </div>
-          )}
-        </AnimatePresence>
       </motion.div>
     </AnimatePresence>
   );

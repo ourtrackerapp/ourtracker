@@ -1,5 +1,5 @@
 import React from 'react';
-import { Home, PieChart, Settings } from 'lucide-react';
+import { Home, PieChart, Trophy, Settings } from 'lucide-react';
 import { TabType } from '../types';
 
 interface BottomTabBarProps {
@@ -21,6 +21,11 @@ export const BottomTabBar: React.FC<BottomTabBarProps> = ({
       id: 'allocation',
       label: 'Alocação',
       icon: <PieChart className="w-5 h-5 stroke-[1.5]" />,
+    },
+    {
+      id: 'goal',
+      label: 'Objetivo',
+      icon: <Trophy className="w-5 h-5 stroke-[1.5]" />,
     },
     {
       id: 'settings',

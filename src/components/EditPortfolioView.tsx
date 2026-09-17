@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { X, ChevronDown, Edit2, Trash2, Check, Loader2, Plus } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -6,7 +6,9 @@ import {
   savePortfolioMeta,
   saveHolding,
   removeHolding,
+  getHistoricalFxRate,
 } from '../services/portfolioService';
+import { convertTickerToYahoo } from '../utils/tickerHelper';
 import { HoldingDoc, PortfolioPosition, PurchaseRecord } from '../types';
 
 interface DepositEntry {
@@ -32,6 +34,34 @@ interface EditPortfolioViewProps {
   positions?: PortfolioPosition[];
   holdings?: HoldingDoc[];
 }
+
+// Deteção inteligente da moeda consoante o ticker e compras
+export const detectCurrencyFromTicker = (
+  ticker: string,
+  existingPurchases: any[] = []
+): 'EUR' | 'USD' => {
+  if (existingPurchases.some((p) => p?.currency === 'USD')) return 'USD';
+  if (existingPurchases.some((p) => p?.currency === 'EUR')) return 'EUR';
+
+  const norm = ticker.trim().toUpperCase();
+  if (
+    norm.endsWith('.DE') ||
+    norm.endsWith('.PA') ||
+    norm.endsWith('.AS') ||
+    norm.endsWith('.MC') ||
+    norm.endsWith('.MI')
+  ) {
+    return 'EUR';
+  }
+  const clean = norm.replace(/\.US$/i, '');
+  if (clean === 'SXR8' || clean === 'VVSM') {
+    return 'EUR';
+  }
+  if (norm.endsWith('.US') || !norm.includes('.')) {
+    return 'USD';
+  }
+  return 'EUR';
+};
 
 export const EditPortfolioView: React.FC<EditPortfolioViewProps> = ({
   onBack,
@@ -79,6 +109,7 @@ export const EditPortfolioView: React.FC<EditPortfolioViewProps> = ({
     shares: string;
     price: string;
     date: string;
+    currency: string;
   } | null>(null);
 
   // Adicionar nova compra a um ativo (+ ao lado do Chevron)
@@ -87,6 +118,7 @@ export const EditPortfolioView: React.FC<EditPortfolioViewProps> = ({
     shares: string;
     price: string;
     date: string;
+    currency: string;
   } | null>(null);
 
   // Carregar dados de depósitos
@@ -134,8 +166,23 @@ export const EditPortfolioView: React.FC<EditPortfolioViewProps> = ({
   // Total acumulado de depósitos
   const totalDeposited = deposits.reduce((sum, d) => sum + (Number(d.amount) || 0), 0);
 
-  // Ordenar posições da maior para a mais pequena
-  const sortedPositions = [...positions].sort((a, b) => (b.value || 0) - (a.value || 0));
+  // Ordenar posições por nome de Ticker (A-Z) e filtrar apenas ativos existentes com unidades > 0
+  const sortedPositions = useMemo(() => {
+    return [...positions]
+      .filter((pos) => {
+        const norm = pos.ticker.trim().toUpperCase();
+        const yahoo = convertTickerToYahoo(norm).toUpperCase();
+        return localHoldings.some((h) => {
+          const hNorm = h.ticker.trim().toUpperCase();
+          const hYahoo = convertTickerToYahoo(hNorm).toUpperCase();
+          return (
+            (hNorm === norm || hYahoo === yahoo || h.id === pos.id) &&
+            Number(h.shares || 0) > 0
+          );
+        });
+      })
+      .sort((a, b) => a.ticker.localeCompare(b.ticker));
+  }, [positions, localHoldings]);
 
   // Alternar balão de ativo e forçar recolha de dados em direto
   const toggleAssetExpand = (ticker: string) => {
@@ -155,14 +202,18 @@ export const EditPortfolioView: React.FC<EditPortfolioViewProps> = ({
   };
 
   // Iniciar adição de nova compra para um ativo
-  const handleStartAddPurchase = (ticker: string, defaultPrice: number) => {
+  const handleStartAddPurchase = (pos: PortfolioPosition) => {
     setEditingPurchase(null);
     setSwipedPurchaseKey(null);
+    const existingHolding = holdings.find((h) => h.ticker === pos.ticker);
+    const detectedCurrency = detectCurrencyFromTicker(pos.ticker, existingHolding?.purchases);
+
     setAddingPurchaseForTicker({
-      ticker,
+      ticker: pos.ticker,
       shares: '',
-      price: defaultPrice ? defaultPrice.toString() : '',
+      price: '', // Totalmente manual
       date: new Date().toISOString().split('T')[0],
+      currency: detectedCurrency,
     });
   };
 
@@ -292,27 +343,37 @@ export const EditPortfolioView: React.FC<EditPortfolioViewProps> = ({
 
   // Obter lista de compras para um ativo
   const getAssetPurchases = (pos: PortfolioPosition): PurchaseItem[] => {
-    const holding = localHoldings.find(
-      (h) => h.ticker.toUpperCase() === pos.ticker.toUpperCase() || h.id === pos.id
-    );
+    const norm = pos.ticker.trim().toUpperCase();
+    const yahoo = convertTickerToYahoo(norm).toUpperCase();
+    const holding = localHoldings.find((h) => {
+      const hNorm = h.ticker.trim().toUpperCase();
+      const hYahoo = convertTickerToYahoo(hNorm).toUpperCase();
+      return hNorm === norm || hYahoo === yahoo || h.id === pos.id;
+    });
 
-    if (holding && Array.isArray(holding.purchases) && holding.purchases.length > 0) {
+    if (!holding || Number(holding.shares || 0) <= 0) {
+      return [];
+    }
+
+    if (Array.isArray(holding.purchases) && holding.purchases.length > 0) {
       return holding.purchases.map((p, idx) => ({
         id: p.id || `p-${pos.ticker}-${idx}`,
         shares: Number(p.shares || 0),
         price: Number(p.price ?? pos.nativePrice ?? pos.currentPrice ?? 0),
         priceEur: Number(p.priceEur ?? p.price ?? pos.currentPrice ?? 0),
         date: p.date,
+        currency: p.currency || pos.nativeCurrency || 'EUR',
       }));
     }
 
     return [
       {
         id: `p-${pos.ticker}-init`,
-        shares: Number(pos.shares || holding?.shares || 0),
+        shares: Number(holding.shares || 0),
         price: Number(pos.nativePrice || pos.currentPrice || 0),
         priceEur: Number(pos.currentPrice || 0),
-        date: holding?.createdAt || Date.now(),
+        date: holding.createdAt || Date.now(),
+        currency: pos.nativeCurrency || 'EUR',
       },
     ];
   };
@@ -373,12 +434,20 @@ export const EditPortfolioView: React.FC<EditPortfolioViewProps> = ({
       ymd = new Date().toISOString().split('T')[0];
     }
 
+    const existingHolding = holdings.find((h) => h.ticker === ticker);
+    const purchaseCurrency = purchase.currency || detectCurrencyFromTicker(ticker, existingHolding?.purchases);
+    const initialPrice =
+      purchaseCurrency === 'USD'
+        ? purchase.price ?? purchase.priceEur ?? 0
+        : purchase.priceEur ?? purchase.price ?? 0;
+
     setEditingPurchase({
       ticker,
       purchaseId: purchase.id,
       shares: purchase.shares.toString(),
-      price: (purchase.priceEur || purchase.price || 0).toString(),
+      price: initialPrice > 0 ? initialPrice.toString() : '',
       date: ymd,
+      currency: purchaseCurrency,
     });
     setAddingPurchaseForTicker(null);
     setSwipedPurchaseKey(null);
@@ -397,13 +466,21 @@ export const EditPortfolioView: React.FC<EditPortfolioViewProps> = ({
       ? new Date(editingPurchase.date).getTime()
       : Date.now();
 
+    // Obter taxa histórica se for USD
+    let priceEur = editingPurchase.currency === 'EUR' ? Number(newPrice || 0) : 0;
+    if (editingPurchase.currency === 'USD') {
+      const rate = await getHistoricalFxRate(editingPurchase.date, 'USD', 'EUR');
+      priceEur = Number((newPrice * rate).toFixed(4));
+    }
+
     const updatedPurchases: PurchaseRecord[] = purchases.map((p) => {
       if (p.id === editingPurchase.purchaseId) {
         return {
           id: p.id,
           shares: Number(newShares),
           price: Number(newPrice || 0),
-          priceEur: Number(newPrice || 0),
+          currency: editingPurchase.currency,
+          priceEur: priceEur,
           date: dateTimestamp,
         };
       }
@@ -411,6 +488,7 @@ export const EditPortfolioView: React.FC<EditPortfolioViewProps> = ({
         id: p.id,
         shares: Number(p.shares),
         price: Number(p.price || 0),
+        currency: p.currency,
         priceEur: Number(p.priceEur || 0),
         date: typeof p.date === 'string' ? new Date(p.date).getTime() : Number(p.date),
       };
@@ -456,11 +534,19 @@ export const EditPortfolioView: React.FC<EditPortfolioViewProps> = ({
       ? new Date(addingPurchaseForTicker.date).getTime()
       : Date.now();
 
+    // Obter taxa histórica se for USD
+    let priceEur = addingPurchaseForTicker.currency === 'EUR' ? Number(newPrice || 0) : 0;
+    if (addingPurchaseForTicker.currency === 'USD') {
+      const rate = await getHistoricalFxRate(addingPurchaseForTicker.date, 'USD', 'EUR');
+      priceEur = Number((newPrice * rate).toFixed(4));
+    }
+
     const newRecord: PurchaseRecord = {
       id: `p-${pos.ticker}-${Date.now()}`,
       shares: Number(newShares),
       price: Number(newPrice || 0),
-      priceEur: Number(newPrice || 0),
+      currency: addingPurchaseForTicker.currency,
+      priceEur: priceEur,
       date: dateTimestamp,
     };
 
@@ -469,6 +555,7 @@ export const EditPortfolioView: React.FC<EditPortfolioViewProps> = ({
         id: p.id,
         shares: Number(p.shares),
         price: Number(p.price || 0),
+        currency: p.currency,
         priceEur: Number(p.priceEur || 0),
         date: typeof p.date === 'string' ? new Date(p.date).getTime() : Number(p.date),
       })),
@@ -523,16 +610,25 @@ export const EditPortfolioView: React.FC<EditPortfolioViewProps> = ({
 
     try {
       setIsSaving(true);
+      const norm = pos.ticker.trim().toUpperCase();
+      const yahoo = convertTickerToYahoo(norm).toUpperCase();
+
       if (remainingPurchases.length === 0 || totalShares <= 0) {
         await removeHolding('main', pos.ticker);
         setLocalHoldings((prev) =>
-          prev.filter((h) => h.ticker.toUpperCase() !== pos.ticker.toUpperCase())
+          prev.filter((h) => {
+            const hNorm = h.ticker.trim().toUpperCase();
+            const hYahoo = convertTickerToYahoo(hNorm).toUpperCase();
+            return hNorm !== norm && hYahoo !== yahoo && h.id !== pos.id;
+          })
         );
       } else {
         await saveHolding('main', pos.ticker, totalShares, pos.color, remainingPurchases);
         setLocalHoldings((prev) =>
           prev.map((h) => {
-            if (h.ticker.toUpperCase() === pos.ticker.toUpperCase()) {
+            const hNorm = h.ticker.trim().toUpperCase();
+            const hYahoo = convertTickerToYahoo(hNorm).toUpperCase();
+            if (hNorm === norm || hYahoo === yahoo || h.id === pos.id) {
               return {
                 ...h,
                 shares: totalShares,
@@ -814,7 +910,7 @@ export const EditPortfolioView: React.FC<EditPortfolioViewProps> = ({
                     <span
                       onClick={(e) => {
                         e.stopPropagation();
-                        handleStartAddPurchase(pos.ticker, pos.nativePrice || pos.currentPrice || 0);
+                        handleStartAddPurchase(pos);
                       }}
                       className="p-1 text-slate-500 hover:text-slate-800 active:scale-90 transition-transform cursor-pointer rounded-md hover:bg-slate-100 flex items-center justify-center"
                       title="Adicionar ação"
@@ -880,21 +976,36 @@ export const EditPortfolioView: React.FC<EditPortfolioViewProps> = ({
                           </div>
                           <div>
                             <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
-                              Preço unitário (€)
+                              Preço unitário ({addingPurchaseForTicker.currency === 'USD' ? '$' : '€'})
                             </span>
-                            <input
-                              type="text"
-                              inputMode="decimal"
-                              value={addingPurchaseForTicker.price}
-                              onChange={(e) =>
-                                setAddingPurchaseForTicker({
-                                  ...addingPurchaseForTicker,
-                                  price: e.target.value,
-                                })
-                              }
-                              className="w-full h-8 px-2.5 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-900 focus:outline-none focus:border-sky-500"
-                              placeholder="0.00"
-                            />
+                            <div className="flex gap-1">
+                              <input
+                                type="text"
+                                inputMode="decimal"
+                                value={addingPurchaseForTicker.price}
+                                onChange={(e) =>
+                                  setAddingPurchaseForTicker({
+                                    ...addingPurchaseForTicker,
+                                    price: e.target.value,
+                                  })
+                                }
+                                className="w-full h-8 px-2.5 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-900 focus:outline-none focus:border-sky-500"
+                                placeholder="0.00"
+                              />
+                              <select
+                                value={addingPurchaseForTicker.currency}
+                                onChange={(e) =>
+                                  setAddingPurchaseForTicker({
+                                    ...addingPurchaseForTicker,
+                                    currency: e.target.value,
+                                  })
+                                }
+                                className="h-8 px-1 bg-white border border-slate-200 rounded-lg text-[10px] font-bold text-slate-900 focus:outline-none focus:border-sky-500"
+                              >
+                                <option value="EUR">EUR</option>
+                                <option value="USD">USD</option>
+                              </select>
+                            </div>
                           </div>
                         </div>
 
@@ -1050,21 +1161,30 @@ export const EditPortfolioView: React.FC<EditPortfolioViewProps> = ({
                                     </div>
                                     <div>
                                       <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
-                                        Preço unitário (€)
+                                        Preço unitário ({editingPurchase.currency === 'USD' ? '$' : '€'})
                                       </span>
-                                      <input
-                                        type="text"
-                                        inputMode="decimal"
-                                        value={editingPurchase.price}
-                                        onChange={(e) =>
-                                          setEditingPurchase({
-                                            ...editingPurchase,
-                                            price: e.target.value,
-                                          })
-                                        }
-                                        className="w-full h-8 px-2.5 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-900 focus:outline-none focus:border-sky-500"
-                                        placeholder="0.00"
-                                      />
+                                      <div className="flex gap-2">
+                                        <input
+                                          type="text"
+                                          inputMode="decimal"
+                                          value={editingPurchase.price}
+                                          onChange={(e) =>
+                                            setEditingPurchase({
+                                              ...editingPurchase,
+                                              price: e.target.value,
+                                            })
+                                          }
+                                          className="w-full h-8 px-2.5 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-900 focus:outline-none focus:border-sky-500 flex-1"
+                                          placeholder="0.00"
+                                        />
+                                        <button
+                                          type="button"
+                                          onClick={() => setEditingPurchase(prev => prev ? ({ ...prev, currency: prev.currency === 'EUR' ? 'USD' : 'EUR' }) : null)}
+                                          className="h-8 px-3 bg-slate-100 border border-slate-200 rounded-lg text-xs font-bold text-slate-900 focus:outline-none transition-colors"
+                                        >
+                                          {editingPurchase.currency === 'EUR' ? '€' : '$'}
+                                        </button>
+                                      </div>
                                     </div>
                                   </div>
 

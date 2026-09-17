@@ -85,9 +85,9 @@ export const HoldingsSection: React.FC<HoldingsSectionProps> = ({
                 {/* Right Column: Return % since first purchase and Value in EUR */}
                 <div className="flex flex-col items-end">
                   {item.isError ? (
-                    <div className="flex flex-col items-end">
-                      <span className="font-bold text-xs text-rose-600 flex items-center gap-1">
-                        Cotação indisponível
+                    <div className="flex flex-col items-end text-right">
+                      <span className="font-bold text-[11px] text-rose-600 flex items-center gap-1">
+                        {item.errorMessage || 'api "Erro"'}
                       </span>
                       <span className="text-[10px] text-slate-400">
                         {item.shares} {item.shares === 1 ? 'ação' : 'ações'}

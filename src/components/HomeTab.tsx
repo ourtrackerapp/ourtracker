@@ -5,13 +5,15 @@ import {
   HomeChartData,
   HomeChartPoint,
   fetchHomeChartData,
+  fetchAllTimeTwrBaseline,
   formatCurrencyEur,
   formatPercentString,
   formatEuroChange,
 } from '../services/homeChartService';
 import { HomePerformanceChart } from './HomePerformanceChart';
-import { fetchPortfolioMeta } from '../services/portfolioService';
+import { fetchPortfolioMeta, getLastSuccessfulQuoteUpdate } from '../services/portfolioService';
 import { TrendingUp, TrendingDown } from 'lucide-react';
+import { RouletteText } from './RouletteText';
 
 const getDisplayName = (ticker: string, originalName: string) => {
   const t = ticker.toUpperCase();
@@ -56,7 +58,8 @@ const CompanyLogo: React.FC<{ ticker: string; name: string }> = ({ ticker, name 
       'ABNB': 'airbnb.com',
       'SPACE': 'spacex.com',
       'SPACEX': 'spacex.com',
-      'SPCX': 'spacex.com'
+      'SPCX': 'spacex.com',
+      'SKM': 'sk.com'
     };
     
     const domain = exactMatches[t] || `${n.replace(/[^a-z0-9 ]/g, '').split(' ')[0]}.com`;
@@ -102,14 +105,97 @@ interface Props {
 const PERIODS: PeriodOption[] = ['1D', '1S', '1M', '3M', 'YTD', 'Tudo'];
 
 export const HomeTab: React.FC<Props> = ({ holdings, totalValue, positions }) => {
-  const [selectedPeriod, setSelectedPeriod] = useState<PeriodOption>('1M');
+  const [selectedPeriod, setSelectedPeriod] = useState<PeriodOption>('1D');
   const [showSp500, setShowSp500] = useState<boolean>(false);
-  const [showNasdaq, setShowNasdaq] = useState<boolean>(false);
-  const [showRussell, setShowRussell] = useState<boolean>(false);
 
   const [chartData, setChartData] = useState<HomeChartData | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [hoveredPoint, setHoveredPoint] = useState<HomeChartPoint | null>(null);
+  const [totalDeposited, setTotalDeposited] = useState<number>(0);
+  const [depositsList, setDepositsList] = useState<any[]>([]);
+  const [allTimeTwrBaseline, setAllTimeTwrBaseline] = useState<{
+    baseIndex: number;
+    baseCapital: number;
+    lastTimestamp: number;
+  } | null>(null);
+  const [isApiFresh, setIsApiFresh] = useState<boolean>(true);
+  const [pulseSync, setPulseSync] = useState<boolean>(false);
+  const [, setTick] = useState<number>(0);
+
+  // Micro-pulso visual sempre que as cotações em tempo real são recebidas
+  useEffect(() => {
+    setPulseSync(true);
+    const timer = setTimeout(() => setPulseSync(false), 900);
+    return () => clearTimeout(timer);
+  }, [totalValue, positions]);
+
+  // Check API freshness every second
+  useEffect(() => {
+    const checkFreshness = () => {
+      const lastUpdate = getLastSuccessfulQuoteUpdate();
+      const now = Date.now();
+      const hasValidQuotes = positions.length > 0 && positions.some(p => !p.isError && p.currentPrice > 0);
+      if ((lastUpdate > 0 && now - lastUpdate < 10 * 60 * 1000) || hasValidQuotes) {
+        setIsApiFresh(true);
+      } else {
+        setIsApiFresh(false);
+      }
+      setTick((t) => t + 1);
+    };
+    checkFreshness();
+    const interval = setInterval(checkFreshness, 1000);
+    return () => clearInterval(interval);
+  }, [positions]);
+
+  // Fetch deposits and keep updated in real time
+  useEffect(() => {
+    let active = true;
+    async function loadDeposited() {
+      try {
+        const meta = await fetchPortfolioMeta('main');
+        const deps = Array.isArray(meta?.deposits) ? meta.deposits : [];
+        const sumDeps = deps.reduce((acc: number, d: any) => acc + (Number(d.amount) || 0), 0);
+        if (active) {
+          setDepositsList(deps);
+          if (sumDeps > 0) {
+            setTotalDeposited(sumDeps);
+          } else {
+            const sumInv = positions.reduce((acc, p) => acc + (p.totalInvested || 0), 0);
+            setTotalDeposited(sumInv);
+          }
+        }
+      } catch {
+        if (active) {
+          const sumInv = positions.reduce((acc, p) => acc + (p.totalInvested || 0), 0);
+          setTotalDeposited(sumInv);
+        }
+      }
+    }
+    loadDeposited();
+    const interval = setInterval(loadDeposited, 3000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [positions]);
+
+  // Maintain baseline all-time TWR data
+  useEffect(() => {
+    let active = true;
+    async function updateTwrBaseline() {
+      if (holdings.length === 0) return;
+      const baseline = await fetchAllTimeTwrBaseline(holdings, depositsList);
+      if (active && baseline) {
+        setAllTimeTwrBaseline(baseline);
+      }
+    }
+    updateTwrBaseline();
+    const interval = setInterval(updateTwrBaseline, 60000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [holdings, depositsList]);
 
   // Fetch chart data on period, holdings or benchmarks toggles
   useEffect(() => {
@@ -123,9 +209,7 @@ export const HomeTab: React.FC<Props> = ({ holdings, totalValue, positions }) =>
         holdings,
         deposits,
         selectedPeriod,
-        showSp500,
-        showNasdaq,
-        showRussell
+        showSp500
       );
       if (!isCancelled) {
         setChartData(data);
@@ -138,12 +222,10 @@ export const HomeTab: React.FC<Props> = ({ holdings, totalValue, positions }) =>
     return () => {
       isCancelled = true;
     };
-  }, [holdings, selectedPeriod, showSp500, showNasdaq, showRussell]);
+  }, [holdings, selectedPeriod, showSp500]);
 
   // Point to display in top header (hovered point during drag or latest point)
   const activePoint = hoveredPoint || chartData?.latest;
-
-  const isAnyBenchmarkActive = showSp500 || showNasdaq || showRussell;
 
   // Performance Calculation: Single sorted list of all valid positions
   const sortedPositions = useMemo(() => {
@@ -160,6 +242,68 @@ export const HomeTab: React.FC<Props> = ({ holdings, totalValue, positions }) =>
 
   // Unidade de exibição global: '%' (percentagem) ou 'eur' (€)
   const [displayUnit, setDisplayUnit] = useState<'percent' | 'eur'>('percent');
+
+  const totalInvested = useMemo(() => {
+    return positions.reduce((acc, p) => acc + (p.isError ? 0 : (p.totalInvested || 0)), 0);
+  }, [positions]);
+
+  const totalProfit = totalValue - totalInvested;
+  
+  // Ajuste deduzido exclusivamente ao valor total do património (-1.74€)
+  const UNRECORDED_ADJUSTMENT = 1.74;
+  const topCardProfit = totalProfit;
+  
+  // Total Equity = Stocks + Cash (where Cash = totalDeposited - totalInvested)
+  const cash = Math.max(0, totalDeposited - totalInvested);
+  const totalEquity = totalValue + cash;
+  const displayTotalEquity = Math.max(0, totalEquity - UNRECORDED_ADJUSTMENT);
+
+  const parseDepositTimestamp = (dateInput: any): number => {
+    if (!dateInput) return 0;
+    if (typeof dateInput === 'number') return dateInput;
+    if (dateInput instanceof Date) return dateInput.getTime();
+    if (typeof dateInput === 'string') {
+      if (/^\d{2}\/\d{2}\/\d{4}$/.test(dateInput)) {
+        const [day, month, year] = dateInput.split('/');
+        const parsed = new Date(`${year}-${month}-${day}T00:00:00.000Z`);
+        if (!isNaN(parsed.getTime())) return parsed.getTime();
+      }
+      const parsed = new Date(dateInput);
+      if (!isNaN(parsed.getTime())) return parsed.getTime();
+    }
+    if (dateInput && typeof dateInput === 'object') {
+      if (typeof dateInput.toMillis === 'function') return dateInput.toMillis();
+      if (typeof dateInput.toDate === 'function') return dateInput.toDate().getTime();
+      if (typeof dateInput.seconds === 'number') return dateInput.seconds * 1000;
+    }
+    return 0;
+  };
+
+  // Cálculo da percentagem TWR real atualizada ao segundo para o cartão de resumo superior
+  const topCardTwrPercent = useMemo(() => {
+    if (!allTimeTwrBaseline || allTimeTwrBaseline.baseCapital <= 0) {
+      if (totalInvested > 0) {
+        return (topCardProfit / totalInvested) * 100;
+      }
+      return totalDeposited > 0 ? (topCardProfit / totalDeposited) * 100 : 0;
+    }
+
+    const { baseIndex, baseCapital, lastTimestamp } = allTimeTwrBaseline;
+
+    let recentDeposits = 0;
+    depositsList.forEach((d: any) => {
+      const depTime = parseDepositTimestamp(d.date);
+      if (depTime > lastTimestamp) {
+        recentDeposits += Number(d.amount) || 0;
+      }
+    });
+
+    const adjustedEquity = totalEquity - UNRECORDED_ADJUSTMENT;
+    const subReturn = (adjustedEquity - recentDeposits - baseCapital) / baseCapital;
+    const currentTwrIndex = baseIndex * (1 + subReturn);
+    const twr = (currentTwrIndex - 1) * 100;
+    return isNaN(twr) ? 0 : twr;
+  }, [allTimeTwrBaseline, totalEquity, topCardProfit, totalInvested, totalDeposited, depositsList]);
 
   const toggleDisplayUnit = () => {
     setDisplayUnit((prev) => (prev === 'eur' ? 'percent' : 'eur'));
@@ -199,153 +343,152 @@ export const HomeTab: React.FC<Props> = ({ holdings, totalValue, positions }) =>
 
   return (
     <div className="w-full h-full flex flex-col justify-start bg-white text-slate-900 px-4 pt-2 pb-2 select-none max-w-md mx-auto overflow-y-auto">
-      {/* 1. TOP HEADER */}
-      <div className="w-full flex flex-col justify-start min-h-[50px]">
-        {!isAnyBenchmarkActive ? (
-          /* STANDARD VIEW: NO BENCHMARK ACTIVE */
-          <div className="w-full flex items-start justify-between">
-            <div className="flex items-center gap-2">
-              <span className="w-2.5 h-2.5 rounded-full bg-blue-600 inline-block flex-shrink-0" />
-              <span className="text-3xl font-bold tracking-tight text-slate-900">
-                {activePoint
-                  ? formatCurrencyEur(activePoint.portfolio.capitalValue)
-                  : formatCurrencyEur(totalValue)}
-              </span>
-            </div>
+      {/* TOP SUMMARY - SEM BALÃO DE FUNDO, APENAS TOTAL E LUCRO CENTRADOS COM ROLETA 120Hz */}
+      <div className="relative w-full pt-1 pb-3 mb-1 flex flex-col items-center justify-center text-center">
+        {/* API status indicator discretely positioned in top right */}
+        <div className="absolute top-1 right-1 flex items-center">
+          <span
+            className={`w-2 h-2 rounded-full inline-block transition-all duration-300 ${
+              isApiFresh
+                ? pulseSync
+                  ? 'bg-emerald-400 scale-125 shadow-[0_0_10px_rgba(16,185,129,0.9)] ring-2 ring-emerald-300/40'
+                  : 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.5)]'
+                : 'bg-rose-500 animate-pulse shadow-[0_0_8px_rgba(244,63,94,0.6)]'
+            }`}
+            title={isApiFresh ? 'Atualização ativa a cada 3s (Tempo Real)' : 'A usar valores em cache / Falha na API'}
+          />
+        </div>
 
-            <div className="flex flex-col items-end text-right">
+        {/* Centered Main Equity Value com efeito roleta 120Hz e desfocagem */}
+        <div className="text-3xl font-black text-slate-900 tracking-tight leading-none mb-1.5 flex items-center justify-center">
+          <RouletteText text={formatCurrencyEur(displayTotalEquity)} />
+        </div>
+
+        {/* Centered Lucro & TWR com efeito roleta 120Hz e desfocagem */}
+        <div
+          className={`flex items-baseline justify-center gap-1.5 ${
+            topCardTwrPercent >= 0 ? 'text-emerald-600' : 'text-rose-600'
+          }`}
+        >
+          <RouletteText
+            text={formatEuroValue(topCardProfit)}
+            className="text-sm font-black tracking-tight"
+          />
+          <RouletteText
+            text={formatPercentString(topCardTwrPercent)}
+            className="text-xs font-bold opacity-85"
+          />
+        </div>
+      </div>
+
+      {/* Linha separadora super minimalista */}
+      <div className="w-full border-t border-slate-100/80 my-1.5" />
+
+      {/* 1. TOP HEADER (CHART INTERACTIVE HEADER) */}
+      {!showSp500 ? (
+        <div className="w-full flex items-center justify-end min-h-[30px] mb-2">
+          <div className="flex flex-col items-end text-right">
+            <span
+              className={`text-lg font-semibold tracking-tight ${getReturnColorClass(
+                activePoint?.portfolio?.returnPercent
+              )}`}
+            >
+              {activePoint && activePoint.portfolio
+                ? formatPercentString(activePoint.portfolio.returnPercent)
+                : '0,00%'}
+            </span>
+            <span
+              className={`text-sm font-medium ${getReturnColorClass(
+                activePoint?.portfolio?.euroChange
+              )}`}
+            >
+              {activePoint && activePoint.portfolio
+                ? formatEuroChange(activePoint.portfolio.euroChange)
+                : '€0'}
+            </span>
+          </div>
+        </div>
+      ) : (
+        <div className="w-full grid grid-cols-2 gap-2 min-h-[50px] mb-4">
+          {/* Portfolio Card */}
+          <div className="flex flex-col justify-center bg-blue-50/40 border border-blue-100/50 rounded-2xl p-3">
+            <div className="flex items-center gap-1.5 mb-1.5">
+              <span className="w-2 h-2 rounded-full bg-blue-500" />
+              <span className="text-[10px] font-bold text-blue-700 uppercase tracking-wider">Portfólio</span>
+            </div>
+            <span className="text-xl font-bold tracking-tight text-slate-900 leading-none mb-1">
+              {activePoint && activePoint.portfolio
+                ? formatCurrencyEur(activePoint.portfolio.capitalValue)
+                : formatCurrencyEur(totalValue)}
+            </span>
+            <div className="flex items-center gap-1.5">
               <span
-                className={`text-lg font-semibold tracking-tight ${getReturnColorClass(
-                  activePoint?.portfolio.returnPercent
+                className={`text-xs font-bold ${getReturnColorClass(
+                  activePoint?.portfolio?.returnPercent
                 )}`}
               >
-                {activePoint
+                {activePoint && activePoint.portfolio
                   ? formatPercentString(activePoint.portfolio.returnPercent)
                   : '0,00%'}
               </span>
               <span
-                className={`text-sm font-medium ${getReturnColorClass(
-                  activePoint?.portfolio.euroChange
+                className={`text-[10px] font-medium ${getReturnColorClass(
+                  activePoint?.portfolio?.euroChange
                 )}`}
               >
-                {activePoint
+                {activePoint && activePoint.portfolio
                   ? formatEuroChange(activePoint.portfolio.euroChange)
                   : '€0'}
               </span>
             </div>
           </div>
-        ) : (
-          /* BENCHMARK ACTIVE VIEW: Ultra-compact flex layout to fit on one line */
-          <div className="w-full flex flex-wrap gap-1 pt-0.5 pb-1">
-            {/* Portfolio Chip */}
-            <div className="flex items-center gap-1.5 bg-blue-50/80 px-2 py-0.5 rounded-full border border-blue-100 justify-between">
-              <div className="flex items-center gap-1 min-w-0">
-                <span className="w-1.5 h-1.5 rounded-full bg-blue-600 flex-shrink-0" />
-                <span className="font-bold text-blue-700 text-[9px] uppercase tracking-wider">Port</span>
-              </div>
-              <div className="flex items-center gap-1.5 text-right ml-1">
-                <span className="font-bold text-slate-900 text-[10px]">
-                  {activePoint
-                    ? formatCurrencyEur(activePoint.portfolio.capitalValue)
-                    : formatCurrencyEur(totalValue)}
-                </span>
-                <span
-                  className={`font-bold text-[9px] ${getReturnColorClass(
-                    activePoint?.portfolio.returnPercent
-                  )}`}
-                >
-                  {activePoint
-                    ? formatPercentString(activePoint.portfolio.returnPercent)
-                    : '0,00%'}
-                </span>
-              </div>
+
+          {/* S&P 500 Card */}
+          <div className="flex flex-col justify-center bg-yellow-50/40 border border-yellow-100/50 rounded-2xl p-3 relative">
+            <button 
+              type="button"
+              onClick={() => setShowSp500(false)}
+              className="absolute top-2 right-2 w-6 h-6 flex items-center justify-center rounded-full hover:bg-yellow-100/80 text-yellow-700 transition-colors"
+            >
+              ×
+            </button>
+            <div className="flex items-center gap-1.5 mb-1.5">
+              <span className="w-2 h-2 rounded-full bg-yellow-500" />
+              <span className="text-[10px] font-bold text-yellow-700 uppercase tracking-wider">S&P 500</span>
             </div>
-
-            {/* SP500 Chip */}
-            {showSp500 && (
-              <div className="flex items-center gap-1.5 bg-yellow-50/80 px-2 py-0.5 rounded-full border border-yellow-100 justify-between">
-                <div className="flex items-center gap-1 min-w-0">
-                  <span className="w-1.5 h-1.5 rounded-full bg-yellow-600 flex-shrink-0" />
-                  <span className="font-bold text-yellow-700 text-[9px] uppercase tracking-wider">SP5</span>
-                </div>
-                <div className="flex items-center gap-1.5 text-right ml-1">
-                  <span className="font-bold text-slate-900 text-[10px]">
-                    {activePoint?.sp500
-                      ? formatCurrencyEur(activePoint.sp500.capitalValue)
-                      : '€0'}
-                  </span>
-                  <span
-                    className={`font-bold text-[9px] ${getReturnColorClass(
-                      activePoint?.sp500?.returnPercent
-                    )}`}
-                  >
-                    {activePoint?.sp500
-                      ? formatPercentString(activePoint.sp500.returnPercent)
-                      : '0%'}
-                  </span>
-                </div>
-              </div>
-            )}
-
-            {/* NASDAQ Chip */}
-            {showNasdaq && (
-              <div className="flex items-center gap-1.5 bg-green-50/80 px-2 py-0.5 rounded-full border border-green-100 justify-between">
-                <div className="flex items-center gap-1 min-w-0">
-                  <span className="w-1.5 h-1.5 rounded-full bg-green-600 flex-shrink-0" />
-                  <span className="font-bold text-green-700 text-[9px] uppercase tracking-wider">NDQ</span>
-                </div>
-                <div className="flex items-center gap-1.5 text-right ml-1">
-                  <span className="font-bold text-slate-900 text-[10px]">
-                    {activePoint?.nasdaq
-                      ? formatCurrencyEur(activePoint.nasdaq.capitalValue)
-                      : '€0'}
-                  </span>
-                  <span
-                    className={`font-bold text-[9px] ${getReturnColorClass(
-                      activePoint?.nasdaq?.returnPercent
-                    )}`}
-                  >
-                    {activePoint?.nasdaq
-                      ? formatPercentString(activePoint.nasdaq.returnPercent)
-                      : '0%'}
-                  </span>
-                </div>
-              </div>
-            )}
-
-            {/* RUSSELL Chip */}
-            {showRussell && (
-              <div className="flex items-center gap-1.5 bg-purple-50/80 px-2 py-0.5 rounded-full border border-purple-100 justify-between">
-                <div className="flex items-center gap-1 min-w-0">
-                  <span className="w-1.5 h-1.5 rounded-full bg-purple-600 flex-shrink-0" />
-                  <span className="font-bold text-purple-700 text-[9px] uppercase tracking-wider">RUSS</span>
-                </div>
-                <div className="flex items-center gap-1.5 text-right ml-1">
-                  <span className="font-bold text-slate-900 text-[10px]">
-                    {activePoint?.russell
-                      ? formatCurrencyEur(activePoint.russell.capitalValue)
-                      : '€0'}
-                  </span>
-                  <span
-                    className={`font-bold text-[9px] ${getReturnColorClass(
-                      activePoint?.russell?.returnPercent
-                    )}`}
-                  >
-                    {activePoint?.russell
-                      ? formatPercentString(activePoint.russell.returnPercent)
-                      : '0%'}
-                  </span>
-                </div>
-              </div>
-            )}
+            <span className="text-xl font-bold tracking-tight text-slate-900 leading-none mb-1">
+              {activePoint?.sp500
+                ? formatCurrencyEur(activePoint.sp500.capitalValue)
+                : '€0,00'}
+            </span>
+            <div className="flex items-center gap-1.5">
+              <span
+                className={`text-xs font-bold ${getReturnColorClass(
+                  activePoint?.sp500?.returnPercent
+                )}`}
+              >
+                {activePoint?.sp500
+                  ? formatPercentString(activePoint.sp500.returnPercent)
+                  : '0,00%'}
+              </span>
+              <span
+                className={`text-[10px] font-medium ${getReturnColorClass(
+                  activePoint?.sp500?.euroChange
+                )}`}
+              >
+                {activePoint?.sp500
+                  ? formatEuroChange(activePoint.sp500.euroChange)
+                  : '€0'}
+              </span>
+            </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* 2. CHART AREA */}
-      <div className="w-full flex flex-col mt-1 mb-0">
-        {isLoading && !chartData ? (
-          <div className="w-full h-[150px] flex items-center justify-center">
+      <div className="w-full flex flex-col mt-3 mb-2 shrink-0">
+        {isLoading ? (
+          <div className="w-full h-[200px] shrink-0 flex items-center justify-center">
             <div className="w-6 h-6 border-2 border-slate-200 border-t-blue-600 rounded-full animate-spin" />
           </div>
         ) : chartData && chartData.points.length > 0 ? (
@@ -353,27 +496,19 @@ export const HomeTab: React.FC<Props> = ({ holdings, totalValue, positions }) =>
             points={chartData.points}
             period={selectedPeriod}
             showSp500={showSp500}
-            showNasdaq={showNasdaq}
-            showRussell={showRussell}
-            onToggleSp500={() => setShowSp500((prev) => !prev)}
-            onToggleNasdaq={() => setShowNasdaq((prev) => !prev)}
-            onToggleRussell={() => setShowRussell((prev) => !prev)}
-            onCloseBenchmarks={() => {
-              setShowSp500(false);
-              setShowNasdaq(false);
-              setShowRussell(false);
-            }}
+            onToggleSp500={() => setShowSp500(true)}
+            onCloseBenchmarks={() => setShowSp500(false)}
             onPointHover={(pt) => setHoveredPoint(pt)}
           />
         ) : (
-          <div className="w-full h-[150px] flex items-center justify-center text-sm text-slate-400">
+          <div className="w-full h-[200px] flex items-center justify-center text-sm text-slate-400">
             Sem dados disponíveis para este período
           </div>
         )}
       </div>
 
       {/* 3. PERIOD SELECTOR */}
-      <div className="w-full flex items-center justify-between gap-1 pt-0.5 pb-3">
+      <div className="w-full flex items-center justify-between gap-1 pt-0.5 pb-2">
         {PERIODS.map((period) => {
           const isSelected = selectedPeriod === period;
           return (
@@ -466,9 +601,9 @@ export const HomeTab: React.FC<Props> = ({ holdings, totalValue, positions }) =>
                     </span>
                   </div>
 
-                  {/* 1ª compra */}
+                  {/* TOTAL */}
                   <div className="flex flex-col items-end leading-none">
-                    <span className="text-[7.5px] font-semibold text-slate-400 uppercase tracking-wider">1ª compra</span>
+                    <span className="text-[7.5px] font-semibold text-slate-400 uppercase tracking-wider">Total</span>
                     <span className={`text-[10px] font-bold mt-0.5 tabular-nums ${getReturnColorClass(isEur ? euro1Compra : (p.firstPurchaseReturnPercent ?? p.totalReturnPercent))}`}>
                       {isEur 
                         ? formatEuroValue(euro1Compra) 

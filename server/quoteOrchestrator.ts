@@ -1,12 +1,7 @@
-import YahooFinance from 'yahoo-finance2';
-import { getYahooQuote, RawProviderQuote, withTimeout } from './providers/yahoo.js';
-import { getTwelveDataQuote } from './providers/twelveData.js';
-import { getFinnhubQuote } from './providers/finnhub.js';
-
-const yf = new YahooFinance({
-  validation: { logErrors: false },
-  suppressNotices: ['yahooSurvey'],
-});
+import { RawProviderQuote, fetchReturnsForTicker, getYahooRestQuote } from './providers/yahoo.js';
+import { getFinnhubQuote, getFinnhubLivePrices } from './providers/finnhub.js';
+import { getAlpacaQuote } from './providers/alpaca.js';
+import { getAlpacaLivePrices } from './providers/alpacaWs.js';
 
 export interface StandardQuoteResponse {
   ticker: string;
@@ -17,7 +12,7 @@ export interface StandardQuoteResponse {
   priceInEur: number;
   changePercent: number;
   weekReturnPercent?: number;
-  monthReturnPercent: number;
+  monthReturnPercent?: number;
   threeMonthReturnPercent?: number;
   targetPrice?: number;
   timestamp: number;
@@ -26,122 +21,50 @@ export interface StandardQuoteResponse {
   errorMessage?: string;
 }
 
-interface CacheEntry {
-  data: StandardQuoteResponse;
-  timestamp: number;
-}
+// Strict mapping Ticker -> Provider
+const STRICT_MAPPING: Record<string, 'ALPACA' | 'FINNHUB' | 'YAHOO-REST'> = {
+  'SPCX': 'FINNHUB',
+  'LEU': 'FINNHUB',
+  'SKHY': 'ALPACA',
+  'ORCL': 'ALPACA',
+  'ORACLE': 'ALPACA',
+  'GOOGL': 'ALPACA',
+  'ALPHABET': 'ALPACA',
+  'SKM': 'ALPACA',
+  'AMZN': 'ALPACA',
+  'AMAZON': 'ALPACA',
+  'SXR8': 'YAHOO-REST',
+  'SXR8.DE': 'YAHOO-REST',
+  'VVSM': 'YAHOO-REST',
+  'VVSM.DE': 'YAHOO-REST'
+};
 
-// 5-minute in-memory cache for SUCCESSFUL quotes only
-const CACHE_TTL_MS = 5 * 60 * 1000;
-const memoryCache = new Map<string, CacheEntry>();
-
-// Cache for resolved symbols (e.g. NVIDIA -> NVDA)
-const resolvedSymbolCache = new Map<string, string>();
-
-async function resolveSymbolIfName(rawQuery: string): Promise<string> {
-  const clean = rawQuery.trim().toUpperCase();
-  if (resolvedSymbolCache.has(clean)) {
-    return resolvedSymbolCache.get(clean)!;
-  }
-
-  try {
-    const searchRes: any = await withTimeout(
-      yf.search(clean, {
-        quotesCount: 5,
-        newsCount: 0,
-        enableFuzzyQuery: true,
-      }),
-      4000
-    );
-    const quotes = Array.isArray(searchRes?.quotes) ? searchRes.quotes : [];
-    const firstSymbol = quotes.find((q: any) => q.symbol)?.symbol;
-    if (firstSymbol) {
-      resolvedSymbolCache.set(clean, firstSymbol.toUpperCase());
-      return firstSymbol.toUpperCase();
-    }
-  } catch {
-    // Fallback to original
-  }
-
-  return clean;
-}
+// Cache (1s TTL for deduplication, bypassed when force is true)
+const quoteCache = new Map<string, { data: StandardQuoteResponse; timestamp: number }>();
 
 export async function fetchSingleQuoteWithFallback(
   rawTicker: string,
-  getLiveFxRateToEur: (currency: string) => Promise<number>
+  getLiveFxRateToEur: (currency: string) => Promise<number>,
+  force: boolean = false
 ): Promise<StandardQuoteResponse> {
   const cleanTicker = rawTicker.trim().toUpperCase();
-  const searchTicker = cleanTicker.endsWith('.US')
-    ? cleanTicker.replace(/\.US$/i, '')
-    : cleanTicker;
-
   const now = Date.now();
 
-  // 1. Check in-memory cache (TTL: 5 min)
-  const cached = memoryCache.get(searchTicker) || memoryCache.get(cleanTicker);
-  if (cached && now - cached.timestamp < CACHE_TTL_MS) {
-    return {
-      ...cached.data,
-      ticker: cleanTicker,
-    };
+  // Check cache only if not forcing fresh data
+  const cached = quoteCache.get(cleanTicker);
+  if (!force && cached && (now - cached.timestamp < 1000)) {
+    return cached.data;
   }
 
-  // 2. Cascade execution: Yahoo (query1 -> query2) -> Twelve Data -> Finnhub
+  // Normalize for mapping check (e.g. AMZN.US -> AMZN)
+  const mappingKey = cleanTicker.endsWith('.US') 
+    ? cleanTicker.replace(/\.US$/i, '') 
+    : cleanTicker;
+
   let rawQuote: RawProviderQuote | null = null;
-  let activeTicker = searchTicker;
+  const provider = STRICT_MAPPING[mappingKey];
 
-  // Step 1: Yahoo Finance (query1 -> query2)
-  try {
-    rawQuote = await getYahooQuote(activeTicker);
-  } catch (e) {
-    rawQuote = null;
-  }
-
-  // Step 2: Twelve Data (Key 1 -> Key 2 on limit)
-  if (!rawQuote) {
-    try {
-      rawQuote = await getTwelveDataQuote(activeTicker);
-    } catch (e) {
-      rawQuote = null;
-    }
-  }
-
-  // Step 3: Finnhub (Key 1 -> Key 2 on limit)
-  if (!rawQuote) {
-    try {
-      rawQuote = await getFinnhubQuote(activeTicker);
-    } catch (e) {
-      rawQuote = null;
-    }
-  }
-
-  // Step 4: If still not found, try auto-resolving company name to official ticker (e.g. NVIDIA -> NVDA)
-  if (!rawQuote) {
-    const resolved = await resolveSymbolIfName(searchTicker);
-    if (resolved && resolved !== searchTicker) {
-      activeTicker = resolved;
-      try {
-        rawQuote = await getYahooQuote(activeTicker);
-      } catch {}
-      if (!rawQuote) {
-        try {
-          rawQuote = await getTwelveDataQuote(activeTicker);
-        } catch {}
-      }
-      if (!rawQuote) {
-        try {
-          rawQuote = await getFinnhubQuote(activeTicker);
-        } catch {}
-      }
-    }
-  }
-
-  // If all sources failed: Return explicit error, NEVER serve stale cache
-  if (!rawQuote || isNaN(rawQuote.price) || rawQuote.price <= 0) {
-    // Delete any stale cache entry
-    memoryCache.delete(searchTicker);
-    memoryCache.delete(cleanTicker);
-
+  if (!provider) {
     return {
       ticker: cleanTicker,
       name: cleanTicker,
@@ -150,70 +73,121 @@ export async function fetchSingleQuoteWithFallback(
       fxRateToEur: 1,
       priceInEur: 0,
       changePercent: 0,
-      monthReturnPercent: 0,
       timestamp: now,
       error: true,
-      errorMessage: 'Cotação indisponível (todas as fontes falharam)',
+      errorMessage: `api "Provider desconhecido para ${cleanTicker}"`,
+    };
+  }
+
+  // Use mappingKey for the actual API calls to ensure consistency
+  const activeTicker = mappingKey;
+
+  try {
+    if (provider === 'ALPACA') {
+      const wsPrices = getAlpacaLivePrices();
+      if (wsPrices[activeTicker]) {
+        rawQuote = {
+          name: activeTicker,
+          price: wsPrices[activeTicker].price,
+          currency: 'USD',
+          source: 'Alpaca',
+        };
+      } else {
+        rawQuote = await getAlpacaQuote(activeTicker);
+        if (rawQuote) rawQuote.source = 'Alpaca';
+      }
+    } else if (provider === 'FINNHUB') {
+      const fhPrices = getFinnhubLivePrices();
+      if (fhPrices[activeTicker]) {
+        rawQuote = {
+          name: activeTicker,
+          price: fhPrices[activeTicker].price,
+          currency: 'USD',
+          source: 'Finnhub',
+        };
+      } else {
+        rawQuote = await getFinnhubQuote(activeTicker);
+        if (rawQuote) rawQuote.source = 'Finnhub';
+      }
+    } else if (provider === 'YAHOO-REST') {
+      rawQuote = await getYahooRestQuote(activeTicker);
+    }
+  } catch (err) {
+    // Fail explicitly as requested
+  }
+
+  if (!rawQuote || isNaN(rawQuote.price) || rawQuote.price <= 0) {
+    return {
+      ticker: cleanTicker,
+      name: cleanTicker,
+      price: 0,
+      currency: 'EUR',
+      fxRateToEur: 1,
+      priceInEur: 0,
+      changePercent: 0,
+      timestamp: now,
+      error: true,
+      errorMessage: `api "${provider}"`,
     };
   }
 
   // Calculate live FX rate to EUR
   let rawPrice = Number(rawQuote.price);
   let currency = (rawQuote.currency || 'EUR').toUpperCase();
-  if (currency === 'GBP' || currency === 'GBX' || currency === 'PENCE') {
-    rawPrice = rawPrice / 100;
-    currency = 'GBP';
-  }
-
   const fxRateToEur = await getLiveFxRateToEur(currency);
   const priceInEur = Number((rawPrice * fxRateToEur).toFixed(4));
 
-  const quoteResponse: StandardQuoteResponse = {
+  // Enrich returns and calculate accurate 1D change with pre/after market support
+  let finalChangePercent = rawQuote.changePercent ?? 0;
+  try {
+    const returns = await fetchReturnsForTicker(cleanTicker);
+    rawQuote.weekReturnPercent = returns.weekReturn;
+    rawQuote.monthReturnPercent = returns.monthReturn;
+    rawQuote.threeMonthReturnPercent = returns.threeMonthReturn;
+    
+    if (returns.extendedChangePercent !== undefined) {
+      finalChangePercent = returns.extendedChangePercent;
+    } else if (returns.lastRegularClose && returns.lastRegularClose > 0 && rawPrice > 0) {
+      finalChangePercent = Number((((rawPrice - returns.lastRegularClose) / returns.lastRegularClose) * 100).toFixed(4));
+    }
+  } catch {}
+
+  const response: StandardQuoteResponse = {
     ticker: cleanTicker,
     name: rawQuote.name || cleanTicker,
     price: Number(rawPrice.toFixed(4)),
     currency,
     fxRateToEur,
     priceInEur,
-    changePercent: rawQuote.changePercent ?? 0,
+    changePercent: finalChangePercent,
     weekReturnPercent: rawQuote.weekReturnPercent,
     monthReturnPercent: rawQuote.monthReturnPercent,
     threeMonthReturnPercent: rawQuote.threeMonthReturnPercent,
-    targetPrice: rawQuote.targetPrice,
     timestamp: now,
     source: rawQuote.source,
   };
 
-  // Only store SUCCESSFUL quotes in memory cache
-  memoryCache.set(searchTicker, { data: quoteResponse, timestamp: now });
-  memoryCache.set(cleanTicker, { data: quoteResponse, timestamp: now });
-  if (activeTicker !== cleanTicker) {
-    memoryCache.set(activeTicker, { data: quoteResponse, timestamp: now });
-  }
+  // Update cache
+  quoteCache.set(cleanTicker, { data: response, timestamp: now });
 
-  return quoteResponse;
+  return response;
 }
 
 export async function orchestrateQuotes(
   tickers: string[],
-  getLiveFxRateToEur: (currency: string) => Promise<number>
+  getLiveFxRateToEur: (currency: string) => Promise<number>,
+  force: boolean = false
 ): Promise<Record<string, StandardQuoteResponse>> {
   const result: Record<string, StandardQuoteResponse> = {};
 
   await Promise.all(
     tickers.map(async (rawTicker) => {
       const cleanTicker = rawTicker.trim().toUpperCase();
-      const searchTicker = cleanTicker.endsWith('.US')
-        ? cleanTicker.replace(/\.US$/i, '')
-        : cleanTicker;
-
-      const quote = await fetchSingleQuoteWithFallback(rawTicker, getLiveFxRateToEur);
-
+      const quote = await fetchSingleQuoteWithFallback(rawTicker, getLiveFxRateToEur, force);
       result[cleanTicker] = quote;
-      result[searchTicker] = quote;
-      result[`${searchTicker}.US`] = quote;
     })
   );
 
   return result;
 }
+

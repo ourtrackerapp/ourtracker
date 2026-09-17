@@ -13,8 +13,6 @@ export interface HomeChartPoint {
   formattedDate: string;
   portfolio: InstrumentMetrics;
   sp500?: InstrumentMetrics;
-  nasdaq?: InstrumentMetrics;
-  russell?: InstrumentMetrics;
 }
 
 export interface HomeChartData {
@@ -142,17 +140,13 @@ export async function fetchHomeChartData(
   holdings: HoldingDoc[],
   deposits: any[],
   period: PeriodOption,
-  includeSp500: boolean,
-  includeNasdaq: boolean,
-  includeRussell: boolean = false
+  includeSp500: boolean
 ): Promise<HomeChartData | null> {
   const apiPeriod = PERIOD_API_MAP[period] || '1m';
 
   const holdingTickers = Array.from(new Set(holdings.map((h) => h.ticker).filter(Boolean)));
   const benchmarkTickers: string[] = [];
   if (includeSp500) benchmarkTickers.push('SXR8.DE');
-  if (includeNasdaq) benchmarkTickers.push('SXRV.DE');
-  if (includeRussell) benchmarkTickers.push('IWM');
 
   const allTickersToFetch = Array.from(new Set([...holdingTickers, ...benchmarkTickers]));
   if (allTickersToFetch.length === 0) {
@@ -267,15 +261,16 @@ export async function fetchHomeChartData(
 
   if (period === '1D') {
     const now = new Date();
-    const midnightUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0);
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).getTime();
+    const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999).getTime();
     const nowTime = now.getTime();
     
-    // Filter points between midnight and now
-    let todayTimestamps = sortedTimestamps.filter((t) => t >= midnightUtc && t <= nowTime);
+    // Filter points between local midnight and now
+    let todayTimestamps = sortedTimestamps.filter((t) => t >= startOfDay && t <= nowTime);
     
-    // Always ensure midnight and current time are included as bounds for the line
-    if (todayTimestamps.length === 0 || todayTimestamps[0] > midnightUtc) {
-      todayTimestamps = [midnightUtc, ...todayTimestamps];
+    // Always ensure start of day (midnight 00:00) and current time are included
+    if (todayTimestamps.length === 0 || todayTimestamps[0] > startOfDay) {
+      todayTimestamps = [startOfDay, ...todayTimestamps];
     }
     if (todayTimestamps[todayTimestamps.length - 1] < nowTime) {
       todayTimestamps = [...todayTimestamps, nowTime];
@@ -394,29 +389,16 @@ export async function fetchHomeChartData(
     });
   });
 
-  // Compute TWR for Portfolio strictly neutralizing capital inflows
+  // Compute TWR for Portfolio and Benchmarks strictly neutralizing capital inflows
   let portIndex = 100;
+  let spIndex = 100;
+
+  let spCapital = 0;
+
+  let initialWindowDeposits = 0;
+  const initialWindowCapital = portfolioPoints[0]?.capital || 0;
+
   const resultPoints: HomeChartPoint[] = [];
-
-  // Helper to calculate benchmark simulated capital using exact deposit historical prices on/after deposit date
-  const getBenchmarkSimulatedCapital = (ticker: string, t: number): number => {
-    let totalVal = 0;
-    depositEvents.forEach((d) => {
-      if (d.timestamp <= t) {
-        const res = getPriceOnOrAfter(ticker, d.timestamp);
-        if (res.priceEur > 0) {
-          const shares = d.amount / res.priceEur;
-          const currentPrice = getTickerPriceAt(ticker, t);
-          totalVal += shares * currentPrice;
-        }
-      }
-    });
-    return totalVal;
-  };
-
-  let sp500InitialPrice = includeSp500 ? (getPriceOnOrAfter('SXR8.DE', sortedTimestamps[0]).priceEur || getTickerPriceAt('SXR8.DE', sortedTimestamps[0])) : 0;
-  let nasdaqInitialPrice = includeNasdaq ? (getPriceOnOrAfter('SXRV.DE', sortedTimestamps[0]).priceEur || getTickerPriceAt('SXRV.DE', sortedTimestamps[0])) : 0;
-  let russellInitialPrice = includeRussell ? (getPriceOnOrAfter('IWM', sortedTimestamps[0]).priceEur || getTickerPriceAt('IWM', sortedTimestamps[0])) : 0;
 
   portfolioPoints.forEach((pt, idx) => {
     const t = pt.timestamp;
@@ -428,45 +410,48 @@ export async function fetchHomeChartData(
       if (d.timestamp <= t) totalDepositsUpToT += d.amount;
     });
 
-    // --- PORTFOLIO TWR / ALL-TIME RETURN ---
+    // --- PORTFOLIO & BENCHMARK TWR UPDATES ---
     if (idx === 0) {
+      initialWindowDeposits = totalDepositsUpToT;
       portIndex = 100;
+      spIndex = 100;
+      
+      spCapital = pt.capital;
     } else {
       const prevPort = portfolioPoints[idx - 1];
       const prevCap = prevPort.capital;
       const cashInflow = pt.cashInflow;
+      const prevT = prevPort.timestamp;
 
+      // Portfolio TWR
       if (prevCap > 0) {
         const subReturn = (pt.capital - cashInflow - prevCap) / prevCap;
         portIndex = portIndex * (1 + subReturn);
       } else if (pt.capital > 0) {
         portIndex = 100;
       }
+
+      // Benchmarks TWR & Capital
+      if (includeSp500) {
+        const prevSp = getTickerPriceAt('SXR8.DE', prevT);
+        const currSp = getTickerPriceAt('SXR8.DE', t);
+        const spReturn = prevSp > 0 ? (currSp - prevSp) / prevSp : 0;
+        spIndex = spIndex * (1 + spReturn);
+        spCapital = (spCapital * (1 + spReturn)) + cashInflow;
+      }
     }
+
+    const windowNetDeposits = totalDepositsUpToT - initialWindowDeposits;
 
     let portReturnPercent = 0;
     let portEuroChange = 0;
 
-    const initialWindowCapital = portfolioPoints[0]?.capital || 0;
-
     if (period === 'Tudo') {
-      // PERÍODO TUDO: Rentabilidade e Lucro Total de Toda a Vida da Carteira vs Depósitos Reais
-      if (totalDepositsUpToT > 0) {
-        portEuroChange = pt.capital - totalDepositsUpToT;
-        portReturnPercent = ((pt.capital - totalDepositsUpToT) / totalDepositsUpToT) * 100;
-      } else {
-        portEuroChange = 0;
-        portReturnPercent = 0;
-      }
-    } else {
-      // JANELAS TEMPORAIS (1D, 1S, 1M, 3M, YTD):
-      // A rentabilidade percentual é a evolução real do capital no período
       portReturnPercent = isNaN(portIndex - 100) ? 0 : (portIndex - 100);
-      if (initialWindowCapital > 0) {
-        portEuroChange = initialWindowCapital * (portReturnPercent / 100);
-      } else {
-        portEuroChange = pt.capital - totalDepositsUpToT;
-      }
+      portEuroChange = pt.capital - totalDepositsUpToT;
+    } else {
+      portReturnPercent = isNaN(portIndex - 100) ? 0 : (portIndex - 100);
+      portEuroChange = pt.capital - initialWindowCapital - windowNetDeposits;
     }
 
     const pointItem: HomeChartPoint = {
@@ -482,110 +467,24 @@ export async function fetchHomeChartData(
     // --- S&P 500 BENCHMARK ---
     if (includeSp500) {
       if (t < firstDepositTime || totalDepositsUpToT === 0) {
-        pointItem.sp500 = {
-          capitalValue: 0,
-          returnPercent: 0,
-          euroChange: 0,
-        };
+        pointItem.sp500 = { capitalValue: 0, returnPercent: 0, euroChange: 0 };
       } else {
-        const priceSp = getTickerPriceAt('SXR8.DE', t);
-        if (sp500InitialPrice === 0 && priceSp > 0) {
-          sp500InitialPrice = priceSp;
-        }
-        
         let spReturnPercent = 0;
         let spEuroChange = 0;
-        let spFinalCapital = 0;
-
+        
         if (period === 'Tudo') {
-          const spCapital = getBenchmarkSimulatedCapital('SXR8.DE', t);
+          // For 'Tudo', we use simple calculation since initial capital is 0
           spEuroChange = spCapital - totalDepositsUpToT;
           spReturnPercent = totalDepositsUpToT > 0 ? ((spCapital - totalDepositsUpToT) / totalDepositsUpToT) * 100 : 0;
-          spFinalCapital = spCapital;
         } else {
-          spReturnPercent = sp500InitialPrice > 0 ? ((priceSp / sp500InitialPrice) - 1) * 100 : 0;
-          spEuroChange = initialWindowCapital * (spReturnPercent / 100);
-          spFinalCapital = initialWindowCapital * (1 + spReturnPercent / 100);
+          spReturnPercent = isNaN(spIndex - 100) ? 0 : (spIndex - 100);
+          spEuroChange = spCapital - initialWindowCapital - windowNetDeposits;
         }
 
         pointItem.sp500 = {
-          capitalValue: spFinalCapital,
+          capitalValue: spCapital,
           returnPercent: isNaN(spReturnPercent) ? 0 : spReturnPercent,
           euroChange: spEuroChange,
-        };
-      }
-    }
-
-    // --- NASDAQ BENCHMARK ---
-    if (includeNasdaq) {
-      if (t < firstDepositTime || totalDepositsUpToT === 0) {
-        pointItem.nasdaq = {
-          capitalValue: 0,
-          returnPercent: 0,
-          euroChange: 0,
-        };
-      } else {
-        const priceNas = getTickerPriceAt('SXRV.DE', t);
-        if (nasdaqInitialPrice === 0 && priceNas > 0) {
-          nasdaqInitialPrice = priceNas;
-        }
-        
-        let nasReturnPercent = 0;
-        let nasEuroChange = 0;
-        let nasFinalCapital = 0;
-
-        if (period === 'Tudo') {
-          const nasCapital = getBenchmarkSimulatedCapital('SXRV.DE', t);
-          nasEuroChange = nasCapital - totalDepositsUpToT;
-          nasReturnPercent = totalDepositsUpToT > 0 ? ((nasCapital - totalDepositsUpToT) / totalDepositsUpToT) * 100 : 0;
-          nasFinalCapital = nasCapital;
-        } else {
-          nasReturnPercent = nasdaqInitialPrice > 0 ? ((priceNas / nasdaqInitialPrice) - 1) * 100 : 0;
-          nasEuroChange = initialWindowCapital * (nasReturnPercent / 100);
-          nasFinalCapital = initialWindowCapital * (1 + nasReturnPercent / 100);
-        }
-
-        pointItem.nasdaq = {
-          capitalValue: nasFinalCapital,
-          returnPercent: isNaN(nasReturnPercent) ? 0 : nasReturnPercent,
-          euroChange: nasEuroChange,
-        };
-      }
-    }
-
-    // --- RUSSELL BENCHMARK ---
-    if (includeRussell) {
-      if (t < firstDepositTime || totalDepositsUpToT === 0) {
-        pointItem.russell = {
-          capitalValue: 0,
-          returnPercent: 0,
-          euroChange: 0,
-        };
-      } else {
-        const priceRus = getTickerPriceAt('IWM', t);
-        if (russellInitialPrice === 0 && priceRus > 0) {
-          russellInitialPrice = priceRus;
-        }
-        
-        let rusReturnPercent = 0;
-        let rusEuroChange = 0;
-        let rusFinalCapital = 0;
-
-        if (period === 'Tudo') {
-          const rusCapital = getBenchmarkSimulatedCapital('IWM', t);
-          rusEuroChange = rusCapital - totalDepositsUpToT;
-          rusReturnPercent = totalDepositsUpToT > 0 ? ((rusCapital - totalDepositsUpToT) / totalDepositsUpToT) * 100 : 0;
-          rusFinalCapital = rusCapital;
-        } else {
-          rusReturnPercent = russellInitialPrice > 0 ? ((priceRus / russellInitialPrice) - 1) * 100 : 0;
-          rusEuroChange = initialWindowCapital * (rusReturnPercent / 100);
-          rusFinalCapital = initialWindowCapital * (1 + rusReturnPercent / 100);
-        }
-
-        pointItem.russell = {
-          capitalValue: rusFinalCapital,
-          returnPercent: isNaN(rusReturnPercent) ? 0 : rusReturnPercent,
-          euroChange: rusEuroChange,
         };
       }
     }
@@ -598,3 +497,22 @@ export async function fetchHomeChartData(
 
   return finalResult;
 }
+
+export async function fetchAllTimeTwrBaseline(
+  holdings: HoldingDoc[],
+  deposits: any[]
+): Promise<{ baseIndex: number; baseCapital: number; lastTimestamp: number } | null> {
+  try {
+    const data = await fetchHomeChartData(holdings, deposits, 'Tudo', false);
+    if (!data || !data.latest) return null;
+    const lastPt = data.latest;
+    const baseIndex = 1 + (lastPt.portfolio.returnPercent || 0) / 100;
+    const baseCapital = lastPt.portfolio.capitalValue || 0;
+    const lastTimestamp = lastPt.timestamp;
+    return { baseIndex, baseCapital, lastTimestamp };
+  } catch (err) {
+    console.warn('Error fetching all-time TWR baseline:', err);
+    return null;
+  }
+}
+

@@ -1,9 +1,119 @@
+import WebSocket from 'ws';
 import { RawProviderQuote } from './yahoo.js';
 
 const KEYS = [
   process.env.FINNHUB_API_KEY_1 || 'dag9ggpr01quf8mtbus0dag9ggpr01quf8mtbusg',
   process.env.FINNHUB_API_KEY_2 || 'dajunfhr01qrg9hppa10dajunfhr01qrg9hppa1g',
 ];
+
+interface LivePriceStore {
+  [symbol: string]: {
+    price: number;
+    timestamp: number;
+    source: string;
+  };
+}
+
+const livePrices: LivePriceStore = {};
+let wsClient: WebSocket | null = null;
+let currentKeyIndex = 0;
+let currentSubscribedSymbols: string[] = [];
+
+export function getFinnhubLivePrices(): LivePriceStore {
+  return livePrices;
+}
+
+export function connectFinnhubStream(symbols: string[] = []) {
+  if (symbols.length === 0) return;
+  
+  const apiKey = KEYS[currentKeyIndex % KEYS.length];
+  if (!apiKey) return;
+
+  const cleanSymbols = Array.from(new Set(symbols.map(s => s.trim().toUpperCase())));
+  const prevSymbols = [...currentSubscribedSymbols];
+  currentSubscribedSymbols = cleanSymbols;
+
+  // 1. Se já estiver ABERTO, atualizar apenas os símbolos que mudaram
+  if (wsClient && wsClient.readyState === WebSocket.OPEN) {
+    const toUnsub = prevSymbols.filter((s) => !cleanSymbols.includes(s));
+    toUnsub.forEach((symbol) => {
+      wsClient?.send(JSON.stringify({ type: 'unsubscribe', symbol }));
+    });
+    const toSub = cleanSymbols.filter((s) => !prevSymbols.includes(s));
+    toSub.forEach((symbol) => {
+      wsClient?.send(JSON.stringify({ type: 'subscribe', symbol }));
+    });
+    return;
+  }
+
+  // 2. Se estiver a conectar, atualizar apenas a lista
+  if (wsClient && wsClient.readyState === WebSocket.CONNECTING) {
+    return;
+  }
+
+  if (wsClient) {
+    try {
+      (wsClient as any).isClosedByApp = true;
+      wsClient.removeAllListeners('error');
+      wsClient.on('error', () => {});
+      wsClient.terminate();
+    } catch {}
+    wsClient = null;
+  }
+
+  const url = `wss://ws.finnhub.io?token=${apiKey}`;
+  console.log(`Connecting to Finnhub WebSocket (Key ${currentKeyIndex + 1}):`, url);
+
+  const ws = new WebSocket(url);
+  wsClient = ws;
+
+  ws.on('open', () => {
+    console.log(`Finnhub WebSocket connected (Key ${currentKeyIndex + 1})`);
+    currentSubscribedSymbols.forEach(symbol => {
+      ws.send(JSON.stringify({ type: 'subscribe', symbol }));
+    });
+  });
+
+  ws.on('message', (data: WebSocket.Data) => {
+    try {
+      const msg = JSON.parse(data.toString());
+      
+      if (msg.type === 'data') {
+        msg.data.forEach((update: any) => {
+          livePrices[update.s] = {
+            price: Number(update.p),
+            timestamp: update.t,
+            source: 'Finnhub-WS'
+          };
+        });
+      } else if (msg.type === 'error') {
+        console.error('Finnhub WebSocket Error:', msg.msg || msg);
+        if (msg.msg?.toLowerCase().includes('limit') || msg.msg?.toLowerCase().includes('credit')) {
+          console.warn('Switching Finnhub WebSocket key...');
+          currentKeyIndex = (currentKeyIndex + 1) % KEYS.length;
+          connectFinnhubStream(currentSubscribedSymbols);
+        }
+      }
+    } catch (err) {
+      console.error('Error parsing Finnhub WS message:', err);
+    }
+  });
+
+  ws.on('error', (err: any) => {
+    if ((ws as any).isClosedByApp || err?.message?.includes('closed before the connection was established')) {
+      return;
+    }
+    console.error('Finnhub WebSocket error:', err);
+  });
+
+  ws.on('close', () => {
+    if ((ws as any).isClosedByApp) return;
+    console.warn('Finnhub WebSocket closed. Reconnecting in 5s...');
+    setTimeout(() => {
+      if (wsClient === ws) connectFinnhubStream(currentSubscribedSymbols);
+    }, 5000);
+  });
+}
 
 let keyIndex = 0;
 
@@ -72,7 +182,6 @@ export async function getFinnhubQuote(ticker: string): Promise<RawProviderQuote 
         currency,
         name,
         changePercent: Number(changePercent.toFixed(2)),
-        monthReturnPercent: Number(changePercent.toFixed(2)),
         source: 'finnhub',
       };
     } catch {

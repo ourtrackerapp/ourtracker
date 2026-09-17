@@ -2,6 +2,9 @@ import express from 'express';
 import path from 'path';
 import { getExchangeRate } from './serverFx.js';
 import { orchestrateQuotes, fetchSingleQuoteWithFallback } from './server/quoteOrchestrator.js';
+import { connectAlpacaStream, getAlpacaLivePrices } from './server/providers/alpacaWs.js';
+import { connectFinnhubStream } from './server/providers/finnhub.js';
+
 
 interface CachedData<T> {
   data: T;
@@ -27,7 +30,7 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutM
 }
 
 const CHART_RANGE_CONFIG: Record<string, { range: string; interval: string }> = {
-  '1d': { range: '1d', interval: '30m' },
+  '1d': { range: '1d', interval: '15m' },
   '1s': { range: '5d', interval: '1h' },
   '1w': { range: '5d', interval: '1h' },
   '5d': { range: '5d', interval: '1h' },
@@ -651,12 +654,12 @@ async function fetchChartFromYahoo(ticker: string, requestedRange: string = '1m'
         // Obter taxa histórica específica deste ponto (tempo exato ou cotação de fecho do mesmo dia)
         let pointFx = 1.0;
         if (!isEur) {
-          const historicalRate = historicalFxSeries
+          let historicalRate = historicalFxSeries
             ? findHistoricalRate(rawSec, historicalFxSeries)
             : null;
           if (historicalRate == null || isNaN(historicalRate) || historicalRate <= 0) {
-            // Se para este ponto não houver cotação cambial histórica fiável, não fabricar valor nem usar taxa atual fixa
-            continue;
+            // Se para este ponto não houver cotação cambial histórica fiável, usamos a taxa spot atual como fallback seguro
+            historicalRate = currentSpotFx;
           }
           pointFx = isGBp ? historicalRate / 100 : historicalRate;
         }
@@ -1097,12 +1100,15 @@ const handleBatchQuotes = async (req: express.Request, res: express.Response) =>
     tickers = req.body.symbols.map((s: any) => String(s).trim()).filter(Boolean);
   }
 
+  const force = req.query.force === 'true' || req.body?.force === true;
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+
   if (!tickers || tickers.length === 0) {
     return res.json({ quotes: {} });
   }
 
   try {
-    const quotesResult = await orchestrateQuotes(tickers, getFxRateToEur);
+    const quotesResult = await orchestrateQuotes(tickers, getFxRateToEur, force);
     res.json({ quotes: quotesResult });
   } catch (error: any) {
     console.error('Erro global na rota /api/quotes:', error);
@@ -1135,6 +1141,24 @@ app.get('/api/fx/convert/rate', async (req, res) => {
     res.status(500).json({ error: err?.message || 'Failed to convert currency' });
   }
 });
+
+// 8. Alpaca WebSocket Live Prices
+app.get('/api/alpaca/live', (req, res) => {
+  res.json({ prices: getAlpacaLivePrices() });
+});
+
+app.post('/api/alpaca/subscribe', (req, res) => {
+  const symbols = req.body?.symbols || req.body?.tickers || [];
+  if (Array.isArray(symbols) && symbols.length > 0) {
+    connectAlpacaStream(symbols);
+    connectFinnhubStream(symbols);
+  }
+  res.json({ status: 'ok', subscribed: symbols });
+});
+
+// Initialize WebSocket streams on boot
+connectAlpacaStream(['SKHY', 'ORCL', 'GOOGL', 'SKM', 'AMZN']);
+connectFinnhubStream(['SPCX', 'LEU']);
 
 // In development / production
 if (!process.env.VERCEL) {

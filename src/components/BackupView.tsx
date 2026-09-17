@@ -15,6 +15,50 @@ interface BackupViewProps {
   onSyncComplete?: () => void;
 }
 
+// Deteção inteligente da moeda consoante o ativo e as suas compras
+const getHoldingCurrencyInfo = (
+  ticker: string,
+  purchases: any[] = []
+): { currency: 'EUR' | 'USD'; symbol: string } => {
+  const normTicker = ticker.trim().toUpperCase();
+
+  // 1. Verificar se as compras têm moeda explícita
+  if (purchases.some((p) => p?.currency === 'USD')) {
+    return { currency: 'USD', symbol: '$' };
+  }
+  if (purchases.some((p) => p?.currency === 'EUR')) {
+    return { currency: 'EUR', symbol: '€' };
+  }
+
+  // 2. Se o ticker contiver bolsas europeias
+  if (
+    normTicker.includes('.DE') ||
+    normTicker.includes('.PA') ||
+    normTicker.includes('.MC') ||
+    normTicker.includes('.MI') ||
+    normTicker.includes('.AS')
+  ) {
+    return { currency: 'EUR', symbol: '€' };
+  }
+
+  // 3. Ativos americanos conhecidos ou com terminação .US
+  const cleanTicker = normTicker.replace(/\.US$/i, '');
+  const knownUs = [
+    'AMZN', 'GOOGL', 'GOOG', 'ORCL', 'SKM', 'SKHY', 'SPCX', 'LEU',
+    'AAPL', 'TSLA', 'NVDA', 'MSFT', 'META', 'AMD', 'INTC', 'NFLX', 'DIS', 'SPOT', 'UBER', 'ABNB'
+  ];
+  if (normTicker.includes('.US') || knownUs.includes(cleanTicker)) {
+    return { currency: 'USD', symbol: '$' };
+  }
+
+  // 4. ETFs europeus conhecidos
+  if (cleanTicker === 'SXR8' || cleanTicker === 'VVSM') {
+    return { currency: 'EUR', symbol: '€' };
+  }
+
+  return { currency: 'EUR', symbol: '€' };
+};
+
 export const BackupView: React.FC<BackupViewProps> = ({
   onBack,
   onSyncComplete,
@@ -106,12 +150,18 @@ export const BackupView: React.FC<BackupViewProps> = ({
     const parsedHoldings = holdingsList.map((h) => {
       const purchases = Array.isArray(h.purchases) ? h.purchases : [];
       const entriesCount = purchases.length > 0 ? purchases.length : 1;
+      const { currency, symbol } = getHoldingCurrencyInfo(h.ticker, purchases);
+
       const totalInvested = purchases.length > 0
-        ? purchases.reduce(
-            (acc, p) => acc + (Number(p.shares) || 0) * (Number(p.priceEur ?? p.price) || 0),
-            0
-          )
-        : Number(h.shares || 0) * 0; // se não houver compras explícitas
+        ? purchases.reduce((acc, p) => {
+            const sh = Number(p.shares) || 0;
+            const pr =
+              currency === 'USD'
+                ? Number(p.price || p.priceEur || 0)
+                : Number(p.priceEur || p.price || 0);
+            return acc + sh * pr;
+          }, 0)
+        : 0;
 
       return {
         ticker: h.ticker,
@@ -119,6 +169,8 @@ export const BackupView: React.FC<BackupViewProps> = ({
         shares: Number(h.shares || 0),
         entriesCount,
         totalInvested,
+        currency,
+        currencySymbol: symbol,
       };
     });
 
@@ -280,12 +332,11 @@ export const BackupView: React.FC<BackupViewProps> = ({
                                   </span>
                                 </div>
                                 <span className="font-medium text-slate-700">
-                                  €
                                   {h.totalInvested > 0
-                                    ? h.totalInvested.toLocaleString('pt-PT', {
+                                    ? `${h.currencySymbol}${h.totalInvested.toLocaleString('pt-PT', {
                                         minimumFractionDigits: 2,
                                         maximumFractionDigits: 2,
-                                      })
+                                      })}`
                                     : (h.shares || 0) + ' un'}
                                 </span>
                               </div>

@@ -3,7 +3,8 @@ import { Search, Plus, Trash2, Check, Loader2, X } from 'lucide-react';
 import { motion } from 'motion/react';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase';
-import { saveHolding, DISTINCT_PALETTE } from '../services/portfolioService';
+import { saveHolding, DISTINCT_PALETTE, getHistoricalFxRate } from '../services/portfolioService';
+import { convertTickerToYahoo } from '../utils/tickerHelper';
 import { PurchaseRecord } from '../types';
 
 interface SearchResultItem {
@@ -142,6 +143,37 @@ export const AddAssetForm: React.FC<AddAssetFormProps> = ({ onBack, onSuccess })
     ]);
   };
 
+  const getSuggestedCurrency = (ticker: string) => {
+    const norm = ticker.trim().toUpperCase();
+    if (
+      norm.endsWith('.DE') ||
+      norm.endsWith('.PA') ||
+      norm.endsWith('.AS') ||
+      norm.endsWith('.MC') ||
+      norm.endsWith('.MI')
+    ) {
+      return 'EUR';
+    }
+    const clean = norm.replace(/\.US$/i, '');
+    if (clean === 'SXR8' || clean === 'VVSM') {
+      return 'EUR';
+    }
+    if (norm.endsWith('.US') || !norm.includes('.')) {
+      return 'USD';
+    }
+    return 'EUR';
+  };
+
+  const [selectedCurrency, setSelectedCurrency] = useState('EUR');
+
+  useEffect(() => {
+    if (selectedAsset) {
+      setSelectedCurrency(getSuggestedCurrency(selectedAsset.symbol));
+    } else if (searchQuery.trim().length > 0) {
+      setSelectedCurrency(getSuggestedCurrency(searchQuery.trim()));
+    }
+  }, [selectedAsset, searchQuery]);
+
   const handleRemovePurchase = (index: number) => {
     if (purchases.length <= 1) return;
     setPurchases((prev) => prev.filter((_, idx) => idx !== index));
@@ -189,7 +221,7 @@ export const AddAssetForm: React.FC<AddAssetFormProps> = ({ onBack, onSuccess })
         return;
       }
       if (isNaN(priceNum) || priceNum <= 0) {
-        setErrorMessage(`Por favor, introduz o preço da ação em € na compra #${i + 1}.`);
+        setErrorMessage(`Por favor, introduz o preço da ação na compra #${i + 1}.`);
         return;
       }
       if (!p.date) {
@@ -200,11 +232,19 @@ export const AddAssetForm: React.FC<AddAssetFormProps> = ({ onBack, onSuccess })
       const timestamp = new Date(p.date).getTime() || Date.now();
       totalShares += sharesNum;
 
+      // Obter taxa histórica se for USD
+      let priceEur = selectedCurrency === 'EUR' ? Number(priceNum.toFixed(4)) : 0;
+      if (selectedCurrency === 'USD') {
+        const rate = await getHistoricalFxRate(p.date, 'USD', 'EUR');
+        priceEur = Number((priceNum * rate).toFixed(4));
+      }
+
       parsedPurchases.push({
         id: p.id,
         shares: Number(sharesNum.toFixed(6)),
         price: Number(priceNum.toFixed(4)),
-        priceEur: Number(priceNum.toFixed(4)), // Preço estritamente em Euros
+        currency: selectedCurrency,
+        priceEur: priceEur,
         date: timestamp,
       });
     }
@@ -218,7 +258,7 @@ export const AddAssetForm: React.FC<AddAssetFormProps> = ({ onBack, onSuccess })
       setIsSaving(true);
       setErrorMessage(null);
 
-      const normalizedTicker = rawTicker.toUpperCase();
+      const normalizedTicker = convertTickerToYahoo(rawTicker).toUpperCase();
       const existingDocRef = doc(db, 'portfolios', 'main', 'holdings', normalizedTicker);
       const existingSnap = await getDoc(existingDocRef);
 
@@ -292,7 +332,7 @@ export const AddAssetForm: React.FC<AddAssetFormProps> = ({ onBack, onSuccess })
         {!selectedAsset ? (
           <div className="flex flex-col gap-1 relative">
             <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-              Pesquisar ativo no Yahoo Finance
+              Pesquisar ativo
             </label>
             <div className="relative flex items-center bg-slate-50 rounded-2xl border border-slate-200 focus-within:border-sky-500 focus-within:ring-2 focus-within:ring-sky-100 transition-all px-3.5">
               <Search className="w-4 h-4 text-slate-400 shrink-0 mr-2" />
@@ -389,7 +429,7 @@ export const AddAssetForm: React.FC<AddAssetFormProps> = ({ onBack, onSuccess })
           {purchases.map((purchase, index) => (
             <div
               key={purchase.id}
-              className="bg-white rounded-2xl p-4 border border-slate-200 shadow-xs flex flex-col gap-3 relative"
+              className="flex flex-col gap-3 relative pb-6 border-b border-slate-100"
             >
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">
@@ -424,22 +464,30 @@ export const AddAssetForm: React.FC<AddAssetFormProps> = ({ onBack, onSuccess })
                 </div>
               </div>
 
-              {/* Preço da ação em Euros (€) */}
+              {/* Preço da ação e Moeda */}
               <div className="flex flex-col gap-1">
-                <label className="text-xs font-bold text-slate-600">Preço da ação (€)</label>
-                <div className="relative flex items-center bg-slate-50 rounded-xl border border-slate-200 focus-within:border-sky-500 focus-within:ring-2 focus-within:ring-sky-100 transition-all px-3">
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    autoComplete="off"
-                    autoCorrect="off"
-                    spellCheck="false"
-                    placeholder="0,00"
-                    value={purchase.price}
-                    onChange={(e) => handleUpdatePurchase(index, 'price', e.target.value)}
-                    className="w-full py-2.5 bg-transparent border-none text-base font-bold text-slate-900 placeholder:text-slate-300 focus:outline-none focus:ring-0"
-                  />
-                  <span className="text-sm font-bold text-slate-400 select-none pr-1">€</span>
+                <label className="text-xs font-bold text-slate-600">Preço unitário</label>
+                <div className="flex gap-2">
+                  <div className="relative flex items-center bg-slate-50 rounded-xl border border-slate-200 focus-within:border-sky-500 focus-within:ring-2 focus-within:ring-sky-100 transition-all px-3 flex-1">
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      autoComplete="off"
+                      autoCorrect="off"
+                      spellCheck="false"
+                      placeholder="0,00"
+                      value={purchase.price}
+                      onChange={(e) => handleUpdatePurchase(index, 'price', e.target.value)}
+                      className="w-full py-2.5 bg-transparent border-none text-base font-bold text-slate-900 placeholder:text-slate-300 focus:outline-none focus:ring-0"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedCurrency(prev => prev === 'EUR' ? 'USD' : 'EUR')}
+                    className="h-[46px] w-[50px] bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 focus:outline-none transition-colors"
+                  >
+                    {selectedCurrency === 'EUR' ? '€' : '$'}
+                  </button>
                 </div>
               </div>
 

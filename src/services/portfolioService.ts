@@ -13,7 +13,6 @@ import {
 import { db } from '../firebase';
 import { HoldingDoc, PortfolioPosition, PurchaseRecord } from '../types';
 import { convertTickerToYahoo } from '../utils/yahooClient';
-import { fetchDirectRealtimeQuote } from './realtimeQuoteService';
 
 // High-contrast, maximally distinct color palette ensuring adjacent and overall colors are never identical or confusing
 export const DISTINCT_PALETTE = [
@@ -55,11 +54,43 @@ export function getDistinctColor(index: number): string {
 const CLIENT_CACHE_TTL_MS = 5 * 60 * 1000;
 const clientQuotesCache = new Map<string, { data: any; timestamp: number }>();
 
+// Cache for historical FX rates
+const fxCache = new Map<string, number>();
+
+/**
+ * Gets historical FX rate from Frankfurter API
+ */
+export async function getHistoricalFxRate(date: number | string, from: string = 'USD', to: string = 'EUR'): Promise<number> {
+  if (from === to) return 1.0;
+  
+  const dateObj = new Date(date);
+  const dateStr = dateObj.toISOString().split('T')[0];
+  const cacheKey = `${dateStr}_${from}_${to}`;
+
+  if (fxCache.has(cacheKey)) return fxCache.get(cacheKey)!;
+
+  try {
+    const res = await fetch(`https://api.frankfurter.app/${dateStr}?from=${from}&to=${to}`);
+    if (!res.ok) throw new Error(`Frankfurter API error: ${res.status}`);
+    const data = await res.json();
+    if (data && data.rates && data.rates[to]) {
+      const rate = data.rates[to];
+      fxCache.set(cacheKey, rate);
+      return rate;
+    }
+  } catch (err) {
+    console.warn(`Erro ao obter taxa FX para ${dateStr}:`, err);
+  }
+
+  // Fallback to a standard rate if API fails
+  return from === 'USD' && to === 'EUR' ? 0.92 : 1.0;
+}
+
 // Guarda a última cotação válida com sucesso para nunca perder dados em caso de erro temporário
 const lastKnownGoodQuotes = new Map<string, any>();
 
 // Registo do timestamp da última recolha com sucesso (em ms)
-let lastSuccessfulQuoteUpdate = 0;
+let lastSuccessfulQuoteUpdate = Date.now();
 
 export function getLastSuccessfulQuoteUpdate(): number {
   return lastSuccessfulQuoteUpdate;
@@ -103,38 +134,25 @@ export function findQuoteForTicker(quotes: Record<string, any>, rawTicker: strin
   return null;
 }
 
-// Cotações em tempo real com política: 5 min cache, forceRefresh para atualizar imediatamente
+// Cotações estritamente em tempo real (sem cache no cliente e sem fallbacks de valores antigos)
 export async function fetchLiveQuotes(
   tickers: string[],
-  forceRefresh: boolean = false
+  forceRefresh: boolean = true
 ): Promise<Record<string, any>> {
   if (!tickers || !tickers.length) return {};
 
   const now = Date.now();
-  const normalizedTickers = tickers.map((t) => t.trim().toUpperCase());
-  
+  const normalizedTickers = Array.from(new Set(tickers.map((t) => t.trim().toUpperCase())));
   const result: Record<string, any> = {};
-  const tickersToFetch: string[] = [];
-
-  normalizedTickers.forEach((ticker) => {
-    const cached = clientQuotesCache.get(ticker) || clientQuotesCache.get(ticker.replace(/\.US$/i, ''));
-    if (!forceRefresh && cached && now - cached.timestamp < CLIENT_CACHE_TTL_MS && !cached.data?.error) {
-      result[ticker] = cached.data;
-    } else {
-      tickersToFetch.push(ticker);
-    }
-  });
-
-  // Se todos os tickers solicitados já estiverem válidos na cache de 5 minutos, devolve imediatamente sem chamada de rede
-  if (tickersToFetch.length === 0) {
-    return result;
-  }
 
   try {
-    const res = await fetch('/api/quotes', {
+    const res = await fetch(`/api/quotes?force=${forceRefresh}&t=${now}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tickers: tickersToFetch }),
+      headers: { 
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-cache, no-store'
+      },
+      body: JSON.stringify({ tickers: normalizedTickers, force: forceRefresh, timestamp: now }),
     });
 
     if (!res.ok) {
@@ -145,86 +163,27 @@ export async function fetchLiveQuotes(
     const fetchedQuotes: Record<string, any> = data.quotes || {};
 
     let hasSuccess = false;
-    tickersToFetch.forEach((ticker) => {
+    normalizedTickers.forEach((ticker) => {
       const q = findQuoteForTicker(fetchedQuotes, ticker);
       const noSuffix = ticker.replace(/\.US$/i, '');
       const withUs = `${noSuffix}.US`;
 
       if (q && !q.error && q.priceInEur > 0) {
-        // Sucesso: atualiza cache de 5 minutos e última cotação conhecida
         const formattedQuote = { ...q, ticker };
-        clientQuotesCache.set(ticker, { data: formattedQuote, timestamp: now });
-        clientQuotesCache.set(noSuffix, { data: formattedQuote, timestamp: now });
-        clientQuotesCache.set(withUs, { data: formattedQuote, timestamp: now });
-
-        lastKnownGoodQuotes.set(ticker, formattedQuote);
-        lastKnownGoodQuotes.set(noSuffix, formattedQuote);
-        lastKnownGoodQuotes.set(withUs, formattedQuote);
-
         result[ticker] = formattedQuote;
         result[noSuffix] = formattedQuote;
         result[withUs] = formattedQuote;
         hasSuccess = true;
       } else {
-        // Se a chamada falhou ou deu erro mas temos um lastKnownGoodQuote, usamos o último preço válido
-        const fallback =
-          lastKnownGoodQuotes.get(ticker) ||
-          lastKnownGoodQuotes.get(noSuffix) ||
-          lastKnownGoodQuotes.get(withUs) ||
-          clientQuotesCache.get(ticker)?.data;
-
-        if (fallback && !fallback.error && fallback.priceInEur > 0) {
-          result[ticker] = fallback;
-          result[noSuffix] = fallback;
-          result[withUs] = fallback;
-          clientQuotesCache.set(ticker, { data: fallback, timestamp: now });
-        } else {
-          const errQuote = q || {
-            error: true,
-            errorMessage: 'Cotação indisponível',
-          };
-          result[ticker] = errQuote;
-          result[noSuffix] = errQuote;
-          result[withUs] = errQuote;
-        }
+        const errQuote = { 
+          error: true, 
+          errorMessage: q?.errorMessage || 'api "Indisponível"' 
+        };
+        result[ticker] = errQuote;
+        result[noSuffix] = errQuote;
+        result[withUs] = errQuote;
       }
     });
-
-    // Para os tickers que ainda não têm cotação válida, tenta obter em direto via direct real-time fallback com escalonamento (stagger) para não saturar
-    const missingTickers = tickersToFetch.filter((t) => {
-      const q = result[t];
-      return !q || q.error || !q.priceInEur;
-    });
-
-    if (missingTickers.length > 0) {
-      await Promise.all(
-        missingTickers.map(async (ticker, idx) => {
-          // Espaçamento de 40ms entre cada chamada para evitar detecção de flood
-          if (idx > 0) {
-            await new Promise((r) => setTimeout(r, idx * 40));
-          }
-          try {
-            const directQ = await fetchDirectRealtimeQuote(ticker);
-            if (directQ && directQ.priceInEur > 0) {
-              const noSuffix = ticker.replace(/\.US$/i, '');
-              const withUs = `${noSuffix}.US`;
-              clientQuotesCache.set(ticker, { data: directQ, timestamp: now });
-              clientQuotesCache.set(noSuffix, { data: directQ, timestamp: now });
-              clientQuotesCache.set(withUs, { data: directQ, timestamp: now });
-
-              lastKnownGoodQuotes.set(ticker, directQ);
-              lastKnownGoodQuotes.set(noSuffix, directQ);
-              lastKnownGoodQuotes.set(withUs, directQ);
-
-              result[ticker] = directQ;
-              result[noSuffix] = directQ;
-              result[withUs] = directQ;
-              hasSuccess = true;
-            }
-          } catch {}
-        })
-      );
-    }
 
     if (hasSuccess) {
       lastSuccessfulQuoteUpdate = now;
@@ -232,37 +191,11 @@ export async function fetchLiveQuotes(
 
     return result;
   } catch (err) {
-    console.warn('Erro na rota /api/quotes, a tentar fallback direto em tempo real:', err);
-    await Promise.all(
-      tickersToFetch.map(async (ticker) => {
-        try {
-          const directQ = await fetchDirectRealtimeQuote(ticker);
-          if (directQ && directQ.priceInEur > 0) {
-            const noSuffix = ticker.replace(/\.US$/i, '');
-            const withUs = `${noSuffix}.US`;
-            result[ticker] = directQ;
-            result[noSuffix] = directQ;
-            result[withUs] = directQ;
-            lastKnownGoodQuotes.set(ticker, directQ);
-            return;
-          }
-        } catch {}
-
-        const fallback =
-          lastKnownGoodQuotes.get(ticker) ||
-          lastKnownGoodQuotes.get(ticker.replace(/\.US$/i, '')) ||
-          clientQuotesCache.get(ticker)?.data;
-
-        if (fallback && !fallback.error && fallback.priceInEur > 0) {
-          result[ticker] = fallback;
-        } else {
-          result[ticker] = {
-            error: true,
-            errorMessage: 'Cotação indisponível',
-          };
-        }
-      })
-    );
+    console.warn('Erro ao obter cotações em tempo real:', err);
+    normalizedTickers.forEach((ticker) => {
+      const errQuote = { error: true, errorMessage: 'Erro de ligação em tempo real' };
+      result[ticker] = errQuote;
+    });
     return result;
   }
 }
@@ -353,11 +286,27 @@ export async function saveHolding(
   const normalizedTicker = convertTickerToYahoo(ticker.trim()).toUpperCase();
   const rawTicker = ticker.trim().toUpperCase();
 
-  if (rawTicker !== normalizedTicker && rawTicker.endsWith('.US')) {
-    try {
+  // Limpar qualquer documento antigo ou alternativo (ex: com sufixo .US ou IDs não canónicos)
+  try {
+    if (rawTicker !== normalizedTicker) {
       await deleteDoc(doc(db, 'portfolios', portfolioId, 'holdings', rawTicker));
-    } catch (_) {}
-  }
+    }
+    const holdingsRef = collection(db, 'portfolios', portfolioId, 'holdings');
+    const snap = await getDocs(holdingsRef);
+    for (const d of snap.docs) {
+      if (d.id !== normalizedTicker) {
+        const dTicker = (d.data()?.ticker || '').trim().toUpperCase();
+        if (
+          dTicker === normalizedTicker ||
+          dTicker === rawTicker ||
+          convertTickerToYahoo(dTicker).toUpperCase() === normalizedTicker ||
+          convertTickerToYahoo(d.id).toUpperCase() === normalizedTicker
+        ) {
+          await deleteDoc(d.ref);
+        }
+      }
+    }
+  } catch (_) {}
 
   const dataToSave: any = {
     ticker: normalizedTicker,
@@ -475,25 +424,57 @@ export async function uploadClientPortfolioToCloud(
 
 export async function removeHolding(portfolioId: string = 'main', ticker: string): Promise<void> {
   const normTicker = ticker.trim().toUpperCase();
+  const yahooTicker = convertTickerToYahoo(normTicker).toUpperCase();
+
+  // 1. Eliminar documentos diretamente pelos IDs possíveis no Firestore
+  const possibleIds = Array.from(new Set([normTicker, yahooTicker, `${yahooTicker}.US`]));
+  for (const docId of possibleIds) {
+    try {
+      await deleteDoc(doc(db, 'portfolios', portfolioId, 'holdings', docId));
+    } catch (_) {}
+  }
+
+  // 2. Varrer coleção de holdings para eliminar qualquer documento remanescente que coincida com o ticker
   try {
-    const docRef = doc(db, 'portfolios', portfolioId, 'holdings', normTicker);
-    await deleteDoc(docRef);
+    const holdingsRef = collection(db, 'portfolios', portfolioId, 'holdings');
+    const snapshot = await getDocs(holdingsRef);
+    for (const docSnap of snapshot.docs) {
+      const data = docSnap.data();
+      const docTicker = (data?.ticker || '').trim().toUpperCase();
+      const docNormYahoo = convertTickerToYahoo(docTicker).toUpperCase();
+      const docIdYahoo = convertTickerToYahoo(docSnap.id).toUpperCase();
+
+      if (
+        docSnap.id.toUpperCase() === normTicker ||
+        docSnap.id.toUpperCase() === yahooTicker ||
+        docTicker === normTicker ||
+        docTicker === yahooTicker ||
+        docNormYahoo === yahooTicker ||
+        docIdYahoo === yahooTicker
+      ) {
+        await deleteDoc(docSnap.ref);
+      }
+    }
   } catch (firestoreErr) {
     console.warn('Firestore delete fallback to sync:', firestoreErr);
   }
 
-  fetch('/api/portfolio/sync')
-    .then((r) => r.json())
-    .then((res) => {
-      let currentHoldings: any[] = res?.data?.holdings || [];
-      currentHoldings = currentHoldings.filter((h) => h.ticker !== normTicker);
-      return fetch('/api/portfolio/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ data: { holdings: currentHoldings } }),
-      });
-    })
-    .catch(() => {});
+  // 3. Atualizar endpoint de sincronização redundante
+  try {
+    const res = await fetch('/api/portfolio/sync');
+    const syncRes = await res.json();
+    let currentHoldings: any[] = syncRes?.data?.holdings || [];
+    currentHoldings = currentHoldings.filter((h) => {
+      const hTicker = (h.ticker || '').trim().toUpperCase();
+      const hYahoo = convertTickerToYahoo(hTicker).toUpperCase();
+      return hTicker !== normTicker && hTicker !== yahooTicker && hYahoo !== yahooTicker;
+    });
+    await fetch('/api/portfolio/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data: { holdings: currentHoldings } }),
+    });
+  } catch (_) {}
 }
 
 // Cálculo do portfólio em tempo real exclusivamente em Euros (€)
@@ -727,14 +708,11 @@ export function computePortfolio(
       totalReturnPercent = Number(((profitEur / totalInvested) * 100).toFixed(2));
     }
 
-    // 6. Rentabilidade desde a 1ª Compra (%)
+    // 6. Rentabilidade Total (ROI) a ser apresentada na interface
+    // Mostra o impacto real de todo o capital investido na posição.
     let firstPurchaseReturnPercent: number | undefined = totalReturnPercent;
-    if (!isError && firstPurchasePriceEur && firstPurchasePriceEur > 0 && currentPriceInEur > 0) {
-      firstPurchaseReturnPercent = Number((((currentPriceInEur - firstPurchasePriceEur) / firstPurchasePriceEur) * 100).toFixed(2));
-    }
 
     // 7. Motor de Cálculo Rigoroso para as 4 Janelas Temporais (1d, 1w, 1m, 3m)
-    // Para cada lote, pondera o momento exato em que o capital entrou na carteira
     const now = Date.now();
     const computeWindowMetrics = (
       marketReturnPercent: number | undefined,
@@ -755,38 +733,41 @@ export function computePortfolio(
         }
       }
 
-      let capitalBaseEur = 0;
-      let windowProfitEur = 0;
+      let sharesBoughtInWindow = 0;
+      let windowCostInflows = 0;
 
       for (const lot of normalizedLots) {
-        const lotCurrentVal = lot.shares * currentPriceInEur;
-        const effectiveLotCost = lot.costEur > 0 ? lot.costEur : (lot.shares * averagePrice);
-
-        if (lot.timestamp <= windowStartTime) {
-          // Lote adquirido ANTES da janela
-          if (startPriceEur !== undefined && startPriceEur > 0) {
-            const lotStartVal = lot.shares * startPriceEur;
-            capitalBaseEur += lotStartVal;
-            windowProfitEur += (lotCurrentVal - lotStartVal);
-          } else {
-            capitalBaseEur += effectiveLotCost;
-            windowProfitEur += (lotCurrentVal - effectiveLotCost);
-          }
-        } else {
-          // Lote / reforço adquirido DURANTE a janela
-          capitalBaseEur += effectiveLotCost;
-          windowProfitEur += (lotCurrentVal - effectiveLotCost);
+        if (lot.timestamp > windowStartTime) {
+          sharesBoughtInWindow += lot.shares;
+          const effectiveLotCost = lot.costEur > 0 ? lot.costEur : (lot.shares * averagePrice);
+          windowCostInflows += effectiveLotCost;
         }
       }
 
-      if (capitalBaseEur <= 0) {
-        return { returnPercent: undefined, returnEur: undefined };
+      // Estima as ações que já tínhamos no início da janela (evitando números negativos)
+      const windowStartShares = Math.max(0, totalShares - sharesBoughtInWindow);
+      const effectiveStartPrice = startPriceEur !== undefined ? startPriceEur : averagePrice;
+      
+      const windowStartValue = windowStartShares * effectiveStartPrice;
+      const windowCurrentValue = totalShares * currentPriceInEur;
+      
+      const windowProfitEur = windowCurrentValue - windowStartValue - windowCostInflows;
+      const windowCapitalBase = windowStartValue + windowCostInflows;
+
+      let retPct: number | undefined = undefined;
+      
+      // Aplicar ROI real do capital investido na janela
+      if (windowCapitalBase > 0) {
+        retPct = (windowProfitEur / windowCapitalBase) * 100;
+      } else if (marketReturnPercent !== undefined) {
+        retPct = marketReturnPercent;
       }
 
-      const retPct = Number(((windowProfitEur / capitalBaseEur) * 100).toFixed(2));
       const retEur = Number(windowProfitEur.toFixed(2));
-
-      return { returnPercent: retPct, returnEur: retEur };
+      return { 
+        returnPercent: retPct !== undefined ? Number(retPct.toFixed(2)) : undefined, 
+        returnEur: retEur 
+      };
     };
 
     const oneDayMs = 24 * 60 * 60 * 1000;
@@ -799,14 +780,18 @@ export function computePortfolio(
     const m1m = computeWindowMetrics(monthReturnPercent, oneMonthMs);
     const m3m = computeWindowMetrics(threeMonthReturnPercent, threeMonthMs);
 
-    // Fallbacks para quando os dados históricos de mercado não existem
-    const effectiveChangePercent = m1d.returnPercent ?? changePercent;
+    // Rentabilidades de MERCADO (Ticker) vs PESSOAL (Carteira)
+    // Para as colunas de 1d, 1w, 1m, 3m mostramos a variação do MERCADO (Ticker)
+    // Para a coluna TOTAL mostramos a variação PESSOAL (ROI)
+    const effectiveChangePercent = changePercent !== undefined ? changePercent : m1d.returnPercent;
+    const effectiveWeekReturn = weekReturnPercent !== undefined ? weekReturnPercent : (m1w.returnPercent ?? changePercent);
+    const effectiveMonthReturn = monthReturnPercent !== undefined ? monthReturnPercent : m1m.returnPercent;
+    const effectiveThreeMonthReturn = threeMonthReturnPercent !== undefined ? threeMonthReturnPercent : m3m.returnPercent;
+    
+    // Os valores em Euros continuam a ser pessoais (quanto ganhaste naquela janela)
     const effectiveChangeEur = m1d.returnEur;
-    const effectiveWeekReturn = m1w.returnPercent ?? weekReturnPercent ?? changePercent;
     const effectiveWeekEur = m1w.returnEur;
-    const effectiveMonthReturn = m1m.returnPercent ?? monthReturnPercent;
     const effectiveMonthEur = m1m.returnEur;
-    const effectiveThreeMonthReturn = m3m.returnPercent ?? threeMonthReturnPercent;
     const effectiveThreeMonthEur = m3m.returnEur;
 
     if (!isError && totalShares > 0) {
@@ -845,7 +830,7 @@ export function computePortfolio(
       firstPurchaseTimestamp,
       color: fallbackColor,
       isError,
-      errorMessage: isError ? (quote?.errorMessage || 'Cotação indisponível') : undefined,
+      errorMessage: isError ? (quote?.errorMessage || 'api "Erro"') : undefined,
     });
   });
 

@@ -5,6 +5,7 @@ import { HoldingsSection } from './components/HoldingsSection';
 import { PullToRefresh } from './components/PullToRefresh';
 import { BottomTabBar } from './components/BottomTabBar';
 import { HomeTab } from './components/HomeTab';
+import { GoalTab } from './components/GoalTab';
 import { SettingsTab } from './components/SettingsTab';
 import { ContributionCalculatorModal } from './components/ContributionCalculatorModal';
 import { StockChartModal } from './components/StockChartModal';
@@ -21,7 +22,7 @@ import {
 const FIVE_MINUTES_MS = 5 * 60 * 1000;
 
 export default function App() {
-  const [currentTab, setCurrentTab] = useState<TabType>('allocation');
+  const [currentTab, setCurrentTab] = useState<TabType>('home');
   const [isCalculatorOpen, setIsCalculatorOpen] = useState<boolean>(false);
   const [selectedTickerForChart, setSelectedTickerForChart] = useState<string | null>(null);
   const [holdings, setHoldings] = useState<HoldingDoc[]>([]);
@@ -31,6 +32,7 @@ export default function App() {
 
   // Ref to always access latest holdings inside stable timer callbacks
   const holdingsRef = useRef<HoldingDoc[]>([]);
+  const lastSubscribedRef = useRef<string>('');
   useEffect(() => {
     holdingsRef.current = holdings;
   }, [holdings]);
@@ -57,16 +59,49 @@ export default function App() {
   }, []);
 
   // Central quote fetcher
-  const refreshQuotes = useCallback(async (force: boolean = false) => {
+  const refreshQuotes = useCallback(async (force: boolean = false, retryCount: number = 0) => {
     const currentHoldings = holdingsRef.current;
     if (currentHoldings.length === 0) {
       setIsInitializing(false);
       return;
     }
     const tickers = currentHoldings.map((h) => h.ticker);
-    const fetchedQuotes = await fetchLiveQuotes(tickers, force);
-    setQuotes((prev) => ({ ...prev, ...fetchedQuotes }));
-    setIsInitializing(false);
+    
+    // Subscribe server Alpaca stream to active tickers only if tickers changed
+    const tickersStr = JSON.stringify(tickers.slice().sort());
+    if (lastSubscribedRef.current !== tickersStr) {
+      lastSubscribedRef.current = tickersStr;
+      try {
+        fetch('/api/alpaca/subscribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ symbols: tickers }),
+        }).catch(() => {});
+      } catch {}
+    }
+
+    try {
+      const fetchedQuotes = await fetchLiveQuotes(tickers, force);
+      
+      // Check if any of the fetched quotes contain errors
+      const hasErrors = tickers.some(ticker => fetchedQuotes[ticker] && fetchedQuotes[ticker].error);
+      
+      if (hasErrors && retryCount < 2) {
+        console.warn(`Quote fetch failed, retrying immediately (attempt ${retryCount + 1})...`);
+        setTimeout(() => refreshQuotes(force, retryCount + 1), 1000); // 1s retry delay
+        return;
+      }
+
+      setQuotes((prev) => ({ ...prev, ...fetchedQuotes }));
+      setIsInitializing(false);
+    } catch (error) {
+      if (retryCount < 2) {
+        console.warn(`Quote fetch failed, retrying immediately (attempt ${retryCount + 1})...`);
+        setTimeout(() => refreshQuotes(force, retryCount + 1), 1000); // 1s retry delay
+      } else {
+        setIsInitializing(false);
+      }
+    }
   }, []);
 
   // Initial quote fetch and fetch on holdings changes
@@ -76,12 +111,11 @@ export default function App() {
     }
   }, [holdings, refreshQuotes]);
 
-  // 1. Automatic 5-minute background refresh interval (300,000 ms)
+  // 1. Automatic 3-second background real-time refresh interval (3,000 ms)
   useEffect(() => {
     const timerId = setInterval(() => {
-      // Force refresh every 5 minutes to fetch the latest market quotes
       refreshQuotes(true);
-    }, FIVE_MINUTES_MS);
+    }, 3000);
 
     return () => {
       clearInterval(timerId);
@@ -188,6 +222,15 @@ export default function App() {
         </PullToRefresh>
       )}
 
+      {currentTab === 'goal' && (
+        <PullToRefresh onRefresh={handleRefresh} className="flex-1 w-full max-w-md mx-auto flex flex-col">
+          <GoalTab 
+            totalValue={portfolio.totalValue} 
+            positions={portfolio.positions}
+          />
+        </PullToRefresh>
+      )}
+
       {currentTab === 'settings' && (
         <div className="flex-1 w-full max-w-md mx-auto flex flex-col">
           <SettingsTab
@@ -217,7 +260,11 @@ export default function App() {
         holding={
           liveSelectedPosition
             ? holdings.find(
-                (h) => h.ticker.toUpperCase() === liveSelectedPosition.ticker.toUpperCase()
+                (h) => {
+                  const cleanH = h.ticker.toUpperCase().replace(/\.US$/i, '');
+                  const cleanPos = liveSelectedPosition.ticker.toUpperCase().replace(/\.US$/i, '');
+                  return cleanH === cleanPos;
+                }
               )
             : null
         }

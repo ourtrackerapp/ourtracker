@@ -112,6 +112,11 @@ export async function fetchSingleQuoteWithFallback(
         rawQuote = await getAlpacaQuote(activeTicker);
         if (rawQuote) rawQuote.source = 'Alpaca';
       }
+      // Bulletproof fallback to Yahoo REST if Alpaca fails/returns null
+      if (!rawQuote || isNaN(rawQuote.price) || rawQuote.price <= 0) {
+        rawQuote = await getYahooRestQuote(activeTicker);
+        if (rawQuote) rawQuote.source = 'Yahoo-Fallback';
+      }
     } else if (provider === 'FINNHUB') {
       const fhPrices = getFinnhubLivePrices();
       if (fhPrices[activeTicker]) {
@@ -126,11 +131,20 @@ export async function fetchSingleQuoteWithFallback(
         rawQuote = await getFinnhubQuote(activeTicker);
         if (rawQuote) rawQuote.source = 'Finnhub';
       }
+      // Bulletproof fallback to Yahoo REST if Finnhub fails/returns null
+      if (!rawQuote || isNaN(rawQuote.price) || rawQuote.price <= 0) {
+        rawQuote = await getYahooRestQuote(activeTicker);
+        if (rawQuote) rawQuote.source = 'Yahoo-Fallback';
+      }
     } else if (provider === 'YAHOO-REST') {
       rawQuote = await getYahooRestQuote(activeTicker);
     }
   } catch (err) {
-    // Fail explicitly as requested
+    // Last resort fallback to Yahoo REST
+    try {
+      rawQuote = await getYahooRestQuote(activeTicker);
+      if (rawQuote) rawQuote.source = 'Yahoo-Fallback';
+    } catch {}
   }
 
   if (!rawQuote || isNaN(rawQuote.price) || rawQuote.price <= 0) {

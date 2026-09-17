@@ -1,4 +1,3 @@
-import fetch from 'node-fetch';
 import { RawProviderQuote, withTimeout } from './yahoo.js';
 
 const DEFAULT_ALPACA_KEY_ID = 'PK7WO5X3UXAXJPFDU27ZPJGHBP';

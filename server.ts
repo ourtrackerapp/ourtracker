@@ -940,15 +940,19 @@ async function fetchChartFromYahoo(ticker: string, requestedRange: string = '1m'
 const app = express();
 const PORT = 3000;
 
-// Path normalization for serverless environments (e.g. Vercel)
-if (process.env.VERCEL) {
-  app.use((req, _res, next) => {
-    if (req.url && !req.url.startsWith('/api/') && !req.url.startsWith('/api')) {
-      req.url = '/api' + (req.url.startsWith('/') ? '' : '/') + req.url;
-    }
-    next();
-  });
-}
+// CORS and Path normalization for serverless environments (e.g. Vercel)
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, PATCH, DELETE');
+  res.setHeader('Access-Control-Allow-Headers', 'X-Requested-With,content-type,Authorization');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  if (process.env.VERCEL && req.url && !req.url.startsWith('/api/') && !req.url.startsWith('/api')) {
+    req.url = '/api' + (req.url.startsWith('/') ? '' : '/') + req.url;
+  }
+  next();
+});
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
@@ -1106,6 +1110,12 @@ const handleBatchQuotes = async (req: express.Request, res: express.Response) =>
   if (!tickers || tickers.length === 0) {
     return res.json({ quotes: {} });
   }
+
+  // Auto-subscribe WebSockets dynamically for requested tickers
+  try {
+    connectAlpacaStream(tickers);
+    connectFinnhubStream(tickers);
+  } catch {}
 
   try {
     const quotesResult = await orchestrateQuotes(tickers, getFxRateToEur, force);

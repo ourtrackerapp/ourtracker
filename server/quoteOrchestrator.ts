@@ -75,6 +75,7 @@ export async function fetchSingleQuoteWithFallback(
     ? cleanTicker.replace(/\.US$/i, '') 
     : cleanTicker;
 
+  const errorCollector: string[] = [];
   let rawQuote: RawProviderQuote | null = null;
   const provider = STRICT_MAPPING[mappingKey];
   let isFromWs = false;
@@ -109,12 +110,12 @@ export async function fetchSingleQuoteWithFallback(
         };
         isFromWs = true;
       } else {
-        rawQuote = await getAlpacaQuote(activeTicker);
+        rawQuote = await getAlpacaQuote(activeTicker, errorCollector);
         if (rawQuote) rawQuote.source = 'Alpaca';
       }
       // Bulletproof fallback to Yahoo REST if Alpaca fails/returns null
       if (!rawQuote || isNaN(rawQuote.price) || rawQuote.price <= 0) {
-        rawQuote = await getYahooRestQuote(activeTicker);
+        rawQuote = await getYahooRestQuote(activeTicker, errorCollector);
         if (rawQuote) rawQuote.source = 'Yahoo-Fallback';
       }
     } else if (provider === 'FINNHUB') {
@@ -128,26 +129,32 @@ export async function fetchSingleQuoteWithFallback(
         };
         isFromWs = true;
       } else {
-        rawQuote = await getFinnhubQuote(activeTicker);
+        rawQuote = await getFinnhubQuote(activeTicker, errorCollector);
         if (rawQuote) rawQuote.source = 'Finnhub';
       }
       // Bulletproof fallback to Yahoo REST if Finnhub fails/returns null
       if (!rawQuote || isNaN(rawQuote.price) || rawQuote.price <= 0) {
-        rawQuote = await getYahooRestQuote(activeTicker);
+        rawQuote = await getYahooRestQuote(activeTicker, errorCollector);
         if (rawQuote) rawQuote.source = 'Yahoo-Fallback';
       }
     } else if (provider === 'YAHOO-REST') {
-      rawQuote = await getYahooRestQuote(activeTicker);
+      rawQuote = await getYahooRestQuote(activeTicker, errorCollector);
     }
-  } catch (err) {
+  } catch (err: any) {
+    const status = err?.status || (err?.response && err.response.status) || null;
+    errorCollector.push(`Outer block error: ${err?.message || String(err)}${status ? ` (HTTP ${status})` : ''}`);
     // Last resort fallback to Yahoo REST
     try {
-      rawQuote = await getYahooRestQuote(activeTicker);
+      rawQuote = await getYahooRestQuote(activeTicker, errorCollector);
       if (rawQuote) rawQuote.source = 'Yahoo-Fallback';
-    } catch {}
+    } catch (fallbackErr: any) {
+      const fbStatus = fallbackErr?.status || (fallbackErr?.response && fallbackErr.response.status) || null;
+      errorCollector.push(`Yahoo-Fallback final resort failed: ${fallbackErr?.message || String(fallbackErr)}${fbStatus ? ` (HTTP ${fbStatus})` : ''}`);
+    }
   }
 
   if (!rawQuote || isNaN(rawQuote.price) || rawQuote.price <= 0) {
+    const errorDetails = errorCollector.length > 0 ? ` (${errorCollector.join('; ')})` : '';
     return {
       ticker: cleanTicker,
       name: cleanTicker,
@@ -158,7 +165,7 @@ export async function fetchSingleQuoteWithFallback(
       changePercent: 0,
       timestamp: now,
       error: true,
-      errorMessage: `api "${provider}"`,
+      errorMessage: `api "${provider}"${errorDetails}`,
     };
   }
 

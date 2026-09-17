@@ -4,7 +4,7 @@ import { RawProviderQuote, withTimeout } from './yahoo.js';
 const DEFAULT_ALPACA_KEY_ID = 'PK7WO5X3UXAXJPFDU27ZPJGHBP';
 const DEFAULT_ALPACA_SECRET_KEY = 'HwD6C4i7GoDuiuvEbrdTAgRqvuxXCJYo66sGSdDv2ttZ';
 
-export async function getAlpacaQuote(symbol: string): Promise<RawProviderQuote | null> {
+export async function getAlpacaQuote(symbol: string, errorCollector?: string[]): Promise<RawProviderQuote | null> {
   const apiKey = process.env.ALPACA_API_KEY_ID || DEFAULT_ALPACA_KEY_ID;
   const apiSecret = process.env.ALPACA_API_SECRET_KEY || DEFAULT_ALPACA_SECRET_KEY;
 
@@ -27,7 +27,12 @@ export async function getAlpacaQuote(symbol: string): Promise<RawProviderQuote |
     const response = await withTimeout(fetch(url, { headers }), 4000);
 
     let item: any = null;
-    if (response && response.ok) {
+    if (response) {
+      if (!response.ok) {
+        const err = new Error(`Alpaca snapshots request failed: ${response.status}`);
+        (err as any).status = response.status;
+        throw err;
+      }
       const data: any = await response.json();
       item = data[cleanSymbol] || data[cleanSymbol.toUpperCase()] || data[cleanSymbol.toLowerCase()];
     }
@@ -36,7 +41,12 @@ export async function getAlpacaQuote(symbol: string): Promise<RawProviderQuote |
     if (!item) {
       const fallbackUrl = `https://data.alpaca.markets/v2/stocks/${encodeURIComponent(cleanSymbol)}/snapshot`;
       const fallbackResponse = await withTimeout(fetch(fallbackUrl, { headers }), 4000);
-      if (fallbackResponse && fallbackResponse.ok) {
+      if (fallbackResponse) {
+        if (!fallbackResponse.ok) {
+          const err = new Error(`Alpaca fallback snapshot request failed: ${fallbackResponse.status}`);
+          (err as any).status = fallbackResponse.status;
+          throw err;
+        }
         item = await fallbackResponse.json();
       }
     }
@@ -62,7 +72,18 @@ export async function getAlpacaQuote(symbol: string): Promise<RawProviderQuote |
       changePercent,
       source: 'Alpaca-REST',
     };
-  } catch (err) {
+  } catch (err: any) {
+    const status = err?.status || (err?.response && err.response.status) || null;
+    const msg = `Alpaca-REST failed: ${err?.message || String(err)}${status ? ` (HTTP ${status})` : ''}`;
+    if (errorCollector) {
+      errorCollector.push(msg);
+    }
+    console.error(`[Alpaca-REST] Error fetching ${symbol}:`, {
+      provider: 'Alpaca-REST',
+      ticker: symbol,
+      message: err?.message || String(err),
+      status
+    });
     return null;
   }
 }

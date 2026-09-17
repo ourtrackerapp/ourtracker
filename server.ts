@@ -1062,7 +1062,17 @@ app.get('/api/search', async (req, res) => {
 
 // 2. API Health
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', time: new Date().toISOString() });
+  res.json({
+    status: 'ok',
+    env: {
+      FINNHUB_API_KEY_1: !!process.env.FINNHUB_API_KEY_1,
+      FINNHUB_API_KEY_2: !!process.env.FINNHUB_API_KEY_2,
+      ALPACA_API_KEY_ID: !!process.env.ALPACA_API_KEY_ID,
+      ALPACA_API_SECRET_KEY: !!process.env.ALPACA_API_SECRET_KEY,
+      VERCEL: !!process.env.VERCEL
+    },
+    timestamp: new Date().toISOString()
+  });
 });
 
 // 3. API Chart

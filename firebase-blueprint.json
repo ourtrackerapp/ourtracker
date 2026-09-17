@@ -1,0 +1,97 @@
+{
+  "entities": {
+    "Portfolio": {
+      "title": "Portfolio",
+      "description": "User portfolio metadata and settings.",
+      "type": "object",
+      "properties": {
+        "currency": {
+          "type": "string",
+          "description": "Portfolio base currency."
+        },
+        "totalDeposited": {
+          "type": "number",
+          "description": "Total amount deposited by the user."
+        },
+        "account": {
+          "type": "string",
+          "description": "Account identifier."
+        },
+        "updatedAt": {
+          "type": "number",
+          "description": "Timestamp of the last metadata update."
+        }
+      }
+    },
+    "Holding": {
+      "title": "Holding",
+      "description": "An asset holding in the user portfolio.",
+      "type": "object",
+      "properties": {
+        "ticker": {
+          "type": "string",
+          "description": "Unified and normalized ticker symbol (usually matching Yahoo Finance)."
+        },
+        "shares": {
+          "type": "number",
+          "description": "Total quantity of shares held."
+        },
+        "createdAt": {
+          "type": "number",
+          "description": "Timestamp when this holding was created."
+        },
+        "color": {
+          "type": "string",
+          "description": "Hex color code for distinct chart segment rendering."
+        }
+      },
+      "required": [
+        "ticker",
+        "shares",
+        "createdAt"
+      ]
+    },
+    "Backup": {
+      "title": "Backup",
+      "description": "A snapshot backup of user holdings.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier of the backup."
+        },
+        "timestamp": {
+          "type": "number",
+          "description": "Timestamp of the backup creation."
+        },
+        "formattedDate": {
+          "type": "string",
+          "description": "Human-readable date format."
+        },
+        "holdingsCount": {
+          "type": "number",
+          "description": "Number of holdings included."
+        }
+      },
+      "required": [
+        "id",
+        "timestamp",
+        "formattedDate"
+      ]
+    }
+  },
+  "firestore": {
+    "portfolios/{portfolioId}": {
+      "schema": "Portfolio",
+      "description": "User portfolios metadata document"
+    },
+    "portfolios/{portfolioId}/holdings/{holdingId}": {
+      "schema": "Holding",
+      "description": "Asset holdings inside a specific portfolio"
+    },
+    "portfolios/{portfolioId}/backups/{backupId}": {
+      "schema": "Backup",
+      "description": "Snapshot backups created by the user"
+    }
+  }
+}

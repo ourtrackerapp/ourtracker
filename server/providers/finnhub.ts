@@ -124,7 +124,7 @@ function getNextKeyOrder(): string[] {
   return [first, second];
 }
 
-export async function getFinnhubQuote(ticker: string): Promise<RawProviderQuote | null> {
+export async function getFinnhubQuote(ticker: string, errorCollector?: string[]): Promise<RawProviderQuote | null> {
   const cleanTicker = ticker.trim().toUpperCase();
   const searchTicker = cleanTicker.endsWith('.US')
     ? cleanTicker.replace(/\.US$/i, '')
@@ -141,11 +141,16 @@ export async function getFinnhubQuote(ticker: string): Promise<RawProviderQuote 
 
       const res = await fetch(quoteUrl, { signal: AbortSignal.timeout(4000) });
       if (res.status === 429) {
-        // Rate limit hit, try next key
-        continue;
+        const err = new Error(`Finnhub Rate Limit Exceeded: ${res.status}`);
+        (err as any).status = res.status;
+        throw err;
       }
 
-      if (!res.ok) continue;
+      if (!res.ok) {
+        const err = new Error(`Finnhub request failed: ${res.status}`);
+        (err as any).status = res.status;
+        throw err;
+      }
 
       const quoteData = await res.json();
       const currentPrice = Number(quoteData.c);
@@ -168,13 +173,23 @@ export async function getFinnhubQuote(ticker: string): Promise<RawProviderQuote 
           searchTicker
         )}&token=${apiKey}`;
         const profileRes = await fetch(profileUrl, { signal: AbortSignal.timeout(3000) });
-        if (profileRes.ok) {
-          const profileData = await profileRes.json();
-          if (profileData.name) name = profileData.name;
-          if (profileData.currency) currency = profileData.currency.toUpperCase();
+        if (!profileRes.ok) {
+          const err = new Error(`Finnhub Profile request failed: ${profileRes.status}`);
+          (err as any).status = profileRes.status;
+          throw err;
         }
-      } catch {
+        const profileData = await profileRes.json();
+        if (profileData.name) name = profileData.name;
+        if (profileData.currency) currency = profileData.currency.toUpperCase();
+      } catch (err: any) {
         // Profile fetch failure is non-fatal
+        const status = err?.status || (err?.response && err.response.status) || null;
+        console.error(`[Finnhub-Profile] Error fetching profile for ${ticker}:`, {
+          provider: 'Finnhub-Profile',
+          ticker,
+          message: err?.message || String(err),
+          status
+        });
       }
 
       return {
@@ -184,8 +199,19 @@ export async function getFinnhubQuote(ticker: string): Promise<RawProviderQuote 
         changePercent: Number(changePercent.toFixed(2)),
         source: 'finnhub',
       };
-    } catch {
+    } catch (err: any) {
       // Try next key on network error
+      const status = err?.status || (err?.response && err.response.status) || null;
+      const msg = `Finnhub-REST failed (Key: ${apiKey.substring(0, 5)}...): ${err?.message || String(err)}${status ? ` (HTTP ${status})` : ''}`;
+      if (errorCollector) {
+        errorCollector.push(msg);
+      }
+      console.error(`[Finnhub-REST] Error fetching ${ticker} (Key: ${apiKey.substring(0, 5)}...):`, {
+        provider: 'Finnhub-REST',
+        ticker,
+        message: err?.message || String(err),
+        status
+      });
     }
   }
 

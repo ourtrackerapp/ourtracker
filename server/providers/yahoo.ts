@@ -36,7 +36,7 @@ export function withTimeout<T>(promise: Promise<T>, ms: number = PROVIDER_TIMEOU
   });
 }
 
-export async function getYahooRestQuote(ticker: string): Promise<RawProviderQuote | null> {
+export async function getYahooRestQuote(ticker: string, errorCollector?: string[]): Promise<RawProviderQuote | null> {
   try {
     const res = await withTimeout(fetchFromQuery2(ticker, new Date(Date.now() - 5 * 86400000).toISOString().slice(0, 10)), 4000);
     if (res && res.meta) {
@@ -81,7 +81,18 @@ export async function getYahooRestQuote(ticker: string): Promise<RawProviderQuot
         source: 'Yahoo-REST'
       };
     }
-  } catch {
+  } catch (err: any) {
+    const status = err?.status || (err?.response && err.response.status) || null;
+    const msg = `Yahoo-Query2 failed: ${err?.message || String(err)}${status ? ` (HTTP ${status})` : ''}`;
+    if (errorCollector) {
+      errorCollector.push(msg);
+    }
+    console.error(`[Yahoo-REST-Query2] Error fetching ${ticker}:`, {
+      provider: 'Yahoo-REST-Query2',
+      ticker,
+      message: err?.message || String(err),
+      status
+    });
     // Fallback to yf.quote below
   }
 
@@ -109,7 +120,18 @@ export async function getYahooRestQuote(ticker: string): Promise<RawProviderQuot
       prevClose,
       source: 'Yahoo-REST'
     };
-  } catch (err) {
+  } catch (err: any) {
+    const status = err?.status || (err?.response && err.response.status) || null;
+    const msg = `Yahoo-yf.quote failed: ${err?.message || String(err)}${status ? ` (HTTP ${status})` : ''}`;
+    if (errorCollector) {
+      errorCollector.push(msg);
+    }
+    console.error(`[Yahoo-yf.quote] Error fetching ${ticker}:`, {
+      provider: 'Yahoo-yf.quote',
+      ticker,
+      message: err?.message || String(err),
+      status
+    });
     return null;
   }
 }
@@ -125,7 +147,11 @@ async function fetchFromQuery2(sym: string, period1: string): Promise<any> {
     },
     signal: AbortSignal.timeout(3500)
   });
-  if (!res.ok) throw new Error(`Yahoo Query2 failed: ${res.status}`);
+  if (!res.ok) {
+    const err = new Error(`Yahoo Query2 failed: ${res.status}`);
+    (err as any).status = res.status;
+    throw err;
+  }
   const json = await res.json();
   return json.chart.result[0];
 }
@@ -219,7 +245,15 @@ export async function fetchReturnsForTicker(ticker: string): Promise<{
       };
       returnsCache.set(cleanSym, { data: result, timestamp: Date.now() });
       return result;
-    } catch {
+    } catch (err: any) {
+      const status = err?.status || (err?.response && err.response.status) || null;
+      console.error(`[Yahoo-Returns] Error fetching returns for ${ticker} (sym: ${sym}):`, {
+        provider: 'Yahoo-Returns',
+        ticker,
+        sym,
+        message: err?.message || String(err),
+        status
+      });
       // Continue to next symbol
     }
   }

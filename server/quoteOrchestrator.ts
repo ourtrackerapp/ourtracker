@@ -39,8 +39,10 @@ const STRICT_MAPPING: Record<string, 'ALPACA' | 'FINNHUB' | 'YAHOO-REST'> = {
   'VVSM.DE': 'YAHOO-REST'
 };
 
-// Cache (1s TTL for deduplication, bypassed when force is true)
-const quoteCache = new Map<string, { data: StandardQuoteResponse; timestamp: number }>();
+// Cache for deduplication and protecting against 429 rate limits
+// If a quote comes from live WebSocket stream, it is cached for 1.5s.
+// If a quote falls back to HTTP API call, it is strictly cached for 15s to prevent slamming APIs.
+const quoteCache = new Map<string, { data: StandardQuoteResponse; timestamp: number; isFromWs: boolean }>();
 
 export async function fetchSingleQuoteWithFallback(
   rawTicker: string,
@@ -50,10 +52,22 @@ export async function fetchSingleQuoteWithFallback(
   const cleanTicker = rawTicker.trim().toUpperCase();
   const now = Date.now();
 
-  // Check cache only if not forcing fresh data
+  // Smart caching check
   const cached = quoteCache.get(cleanTicker);
-  if (!force && cached && (now - cached.timestamp < 1000)) {
-    return cached.data;
+  if (cached) {
+    const age = now - cached.timestamp;
+    // 1. If very fresh (less than 1.5s), always reuse (deduplication)
+    if (age < 1500) {
+      return cached.data;
+    }
+    // 2. If it was from an HTTP API call (not WS) and is less than 15s old, reuse to avoid 429 rate limits
+    if (!cached.isFromWs && age < 15000) {
+      return cached.data;
+    }
+    // 3. If force is false and is less than 15s old, reuse any cached quote
+    if (!force && age < 15000) {
+      return cached.data;
+    }
   }
 
   // Normalize for mapping check (e.g. AMZN.US -> AMZN)
@@ -63,6 +77,7 @@ export async function fetchSingleQuoteWithFallback(
 
   let rawQuote: RawProviderQuote | null = null;
   const provider = STRICT_MAPPING[mappingKey];
+  let isFromWs = false;
 
   if (!provider) {
     return {
@@ -92,6 +107,7 @@ export async function fetchSingleQuoteWithFallback(
           currency: 'USD',
           source: 'Alpaca',
         };
+        isFromWs = true;
       } else {
         rawQuote = await getAlpacaQuote(activeTicker);
         if (rawQuote) rawQuote.source = 'Alpaca';
@@ -105,6 +121,7 @@ export async function fetchSingleQuoteWithFallback(
           currency: 'USD',
           source: 'Finnhub',
         };
+        isFromWs = true;
       } else {
         rawQuote = await getFinnhubQuote(activeTicker);
         if (rawQuote) rawQuote.source = 'Finnhub';
@@ -168,7 +185,7 @@ export async function fetchSingleQuoteWithFallback(
   };
 
   // Update cache
-  quoteCache.set(cleanTicker, { data: response, timestamp: now });
+  quoteCache.set(cleanTicker, { data: response, timestamp: now, isFromWs });
 
   return response;
 }

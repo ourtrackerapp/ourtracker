@@ -1,6 +1,8 @@
 import fetch from 'node-fetch';
 import { RawProviderQuote, withTimeout } from './yahoo.js';
-import { DEFAULT_ALPACA_KEY_ID, DEFAULT_ALPACA_SECRET_KEY } from './alpacaCredentials.js';
+
+const DEFAULT_ALPACA_KEY_ID = 'PK7WO5X3UXAXJPFDU27ZPJGHBP';
+const DEFAULT_ALPACA_SECRET_KEY = 'HwD6C4i7GoDuiuvEbrdTAgRqvuxXCJYo66sGSdDv2ttZ';
 
 export async function getAlpacaQuote(symbol: string): Promise<RawProviderQuote | null> {
   const apiKey = process.env.ALPACA_API_KEY_ID || DEFAULT_ALPACA_KEY_ID;

@@ -1111,10 +1111,12 @@ const handleBatchQuotes = async (req: express.Request, res: express.Response) =>
     return res.json({ quotes: {} });
   }
 
-  // Auto-subscribe WebSockets dynamically for requested tickers
+  // Auto-subscribe WebSockets dynamically for requested tickers (only on standalone servers, not Vercel Serverless)
   try {
-    connectAlpacaStream(tickers);
-    connectFinnhubStream(tickers);
+    if (!process.env.VERCEL) {
+      connectAlpacaStream(tickers);
+      connectFinnhubStream(tickers);
+    }
   } catch {}
 
   try {
@@ -1159,16 +1161,18 @@ app.get('/api/alpaca/live', (req, res) => {
 
 app.post('/api/alpaca/subscribe', (req, res) => {
   const symbols = req.body?.symbols || req.body?.tickers || [];
-  if (Array.isArray(symbols) && symbols.length > 0) {
+  if (Array.isArray(symbols) && symbols.length > 0 && !process.env.VERCEL) {
     connectAlpacaStream(symbols);
     connectFinnhubStream(symbols);
   }
   res.json({ status: 'ok', subscribed: symbols });
 });
 
-// Initialize WebSocket streams on boot
-connectAlpacaStream(['SKHY', 'ORCL', 'GOOGL', 'SKM', 'AMZN']);
-connectFinnhubStream(['SPCX', 'LEU']);
+// Initialize WebSocket streams on boot (only on standalone servers, not Vercel Serverless)
+if (!process.env.VERCEL) {
+  connectAlpacaStream(['SKHY', 'ORCL', 'GOOGL', 'SKM', 'AMZN']);
+  connectFinnhubStream(['SPCX', 'LEU']);
+}
 
 // In development / production
 if (!process.env.VERCEL) {

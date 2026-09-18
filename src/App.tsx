@@ -7,10 +7,12 @@ import { BottomTabBar } from './components/BottomTabBar';
 import { HomeTab } from './components/HomeTab';
 import { GoalTab } from './components/GoalTab';
 import { SettingsTab } from './components/SettingsTab';
-import { ContributionCalculatorModal } from './components/ContributionCalculatorModal';
+import { AiPortfolioAnalysisView } from './components/AiPortfolioAnalysisView';
+import { ContributionCalculatorModal, AllocationTarget } from './components/ContributionCalculatorModal';
 import { StockChartModal } from './components/StockChartModal';
 import { LoadingScreen } from './components/LoadingScreen';
 import { HoldingDoc, PortfolioPosition, TabType } from './types';
+import { PeriodOption } from './services/homeChartService';
 import {
   subscribeUserHoldings,
   computePortfolio,
@@ -29,6 +31,9 @@ export default function App() {
   const [quotes, setQuotes] = useState<Record<string, any>>({});
   const [resetSettingsSignal, setResetSettingsSignal] = useState<number>(0);
   const [isInitializing, setIsInitializing] = useState<boolean>(true);
+  const [selectedPeriod, setSelectedPeriod] = useState<PeriodOption>('1D');
+  const [calculatorInitialTargets, setCalculatorInitialTargets] = useState<AllocationTarget[] | null>(null);
+  const [calculatorInitialAmount, setCalculatorInitialAmount] = useState<string>('');
 
   // Ref to always access latest holdings inside stable timer callbacks
   const holdingsRef = useRef<HoldingDoc[]>([]);
@@ -66,19 +71,6 @@ export default function App() {
       return;
     }
     const tickers = currentHoldings.map((h) => h.ticker);
-    
-    // Subscribe server Alpaca stream to active tickers only if tickers changed
-    const tickersStr = JSON.stringify(tickers.slice().sort());
-    if (lastSubscribedRef.current !== tickersStr) {
-      lastSubscribedRef.current = tickersStr;
-      try {
-        fetch('/api/alpaca/subscribe', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ symbols: tickers }),
-        }).catch(() => {});
-      } catch {}
-    }
 
     try {
       const fetchedQuotes = await fetchLiveQuotes(tickers, force);
@@ -111,16 +103,17 @@ export default function App() {
     }
   }, [holdings, refreshQuotes]);
 
-  // 1. Automatic 3-second background real-time refresh interval (3,000 ms)
+  // 1. Automatic background real-time refresh interval (3s for 1D, 60s for other periods)
   useEffect(() => {
+    const intervalMs = selectedPeriod === '1D' ? 3000 : 60000;
     const timerId = setInterval(() => {
       refreshQuotes(true);
-    }, 3000);
+    }, intervalMs);
 
     return () => {
       clearInterval(timerId);
     };
-  }, [refreshQuotes]);
+  }, [refreshQuotes, selectedPeriod]);
 
   // 2. Visibility change & window focus detector: check if 5 minutes elapsed since last successful update
   useEffect(() => {
@@ -181,6 +174,28 @@ export default function App() {
     }
   };
 
+  const handleApplyAiAllocation = (allocations: any[]) => {
+    const newTargets: AllocationTarget[] = allocations.map((a, idx) => ({
+      id: `ai_${a.ticker}_${Date.now()}_${idx}`,
+      ticker: a.ticker,
+      name: a.ticker, // Could be improved with name lookups
+      targetPercent: a.percentage
+    }));
+    
+    // Sum of percentages must be 100
+    const totalPct = newTargets.reduce((sum, t) => sum + t.targetPercent, 0);
+    if (totalPct > 0 && totalPct < 100) {
+      // Add a "Caixa" target if needed or redistribute? 
+      // The AI is supposed to return 100%. 
+    }
+
+    setCalculatorInitialTargets(newTargets);
+    // Also pre-fill the amount from the analysis
+    const totalAmount = allocations.reduce((sum, a) => sum + a.amount, 0);
+    setCalculatorInitialAmount(String(totalAmount));
+    setIsCalculatorOpen(true);
+  };
+
   if (isInitializing) {
     return <LoadingScreen />;
   }
@@ -216,8 +231,10 @@ export default function App() {
         <PullToRefresh onRefresh={handleRefresh} className="flex-1 w-full max-w-md mx-auto flex flex-col">
           <HomeTab 
             holdings={holdings} 
-            totalValue={portfolio.totalValue} 
+            totalValue={portfolio.liveTotalValue || portfolio.totalValue} 
             positions={portfolio.positions}
+            selectedPeriod={selectedPeriod}
+            onPeriodChange={setSelectedPeriod}
           />
         </PullToRefresh>
       )}
@@ -229,6 +246,13 @@ export default function App() {
             positions={portfolio.positions}
           />
         </PullToRefresh>
+      )}
+
+      {currentTab === 'analysis' && (
+        <AiPortfolioAnalysisView 
+          positions={portfolio.positions}
+          onApplyAllocation={handleApplyAiAllocation}
+        />
       )}
 
       {currentTab === 'settings' && (
@@ -248,9 +272,16 @@ export default function App() {
       {/* 5. Contribution & Rebalance Calculator Modal */}
       <ContributionCalculatorModal
         isOpen={isCalculatorOpen}
-        onClose={() => setIsCalculatorOpen(false)}
+        onClose={() => {
+          setIsCalculatorOpen(false);
+          setCalculatorInitialTargets(null);
+          setCalculatorInitialAmount('');
+        }}
         positions={portfolio.positions}
         totalValue={portfolio.totalValue}
+        initialTargets={calculatorInitialTargets || undefined}
+        initialAmount={calculatorInitialAmount || undefined}
+        onNavigateToAnalysis={() => setCurrentTab('analysis')}
       />
 
       {/* 6. Interactive Stock & ETF Chart Modal with Live Dynamic Position Updates */}

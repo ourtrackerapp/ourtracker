@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { X, Check, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { fetchPortfolioMeta, savePortfolioMeta } from '../services/portfolioService';
+import { formatDateDDMMYYYY } from '../utils/dateUtils';
 
 interface DepositModalProps {
   isOpen: boolean;
@@ -43,8 +44,7 @@ export const DepositModal: React.FC<DepositModalProps> = ({
       const currentTotal = currentMeta?.totalDeposited || 0;
 
       // Formatar data em padrão legível (DD/MM/AAAA)
-      const [year, month, day] = date.split('-');
-      const formattedDate = `${day}/${month}/${year}`;
+      const formattedDate = formatDateDDMMYYYY(date);
 
       const newDepositEntry = {
         date: formattedDate,
@@ -140,12 +140,17 @@ export const DepositModal: React.FC<DepositModalProps> = ({
             <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">
               Data do depósito
             </label>
-            <input
-              type="date"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-              className="w-full min-h-[48px] px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-semibold text-slate-900 focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 transition-all cursor-pointer"
-            />
+            <div className="relative">
+              <div className="w-full min-h-[48px] px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-semibold text-slate-900 flex items-center transition-all">
+                {formatDateDDMMYYYY(date)}
+              </div>
+              <input
+                type="date"
+                value={date}
+                onChange={(e) => setDate(e.target.value)}
+                className="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
+              />
+            </div>
           </div>
 
           {/* Botão Confirmar depósito */}

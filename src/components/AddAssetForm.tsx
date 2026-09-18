@@ -4,6 +4,7 @@ import { motion } from 'motion/react';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { saveHolding, DISTINCT_PALETTE, getHistoricalFxRate } from '../services/portfolioService';
+import { formatDateDDMMYYYY } from '../utils/dateUtils';
 import { convertTickerToYahoo } from '../utils/tickerHelper';
 import { PurchaseRecord } from '../types';
 
@@ -231,6 +232,10 @@ export const AddAssetForm: React.FC<AddAssetFormProps> = ({ onBack, onSuccess })
 
       const timestamp = new Date(p.date).getTime() || Date.now();
       totalShares += sharesNum;
+
+      // Formatar data para o padrão DD/MM/AAAA para consistência no Firestore
+      const [y, m, d] = p.date.split('-');
+      const formattedDateForDisplay = `${d}/${m}/${y}`;
 
       // Obter taxa histórica se for USD
       let priceEur = selectedCurrency === 'EUR' ? Number(priceNum.toFixed(4)) : 0;
@@ -494,12 +499,17 @@ export const AddAssetForm: React.FC<AddAssetFormProps> = ({ onBack, onSuccess })
               {/* Data da compra */}
               <div className="flex flex-col gap-1">
                 <label className="text-xs font-bold text-slate-600">Data</label>
-                <input
-                  type="date"
-                  value={purchase.date}
-                  onChange={(e) => handleUpdatePurchase(index, 'date', e.target.value)}
-                  className="w-full min-h-[44px] px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-slate-900 focus:outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-100 transition-all cursor-pointer"
-                />
+                <div className="relative">
+                  <div className="w-full min-h-[44px] px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-slate-900 flex items-center transition-all">
+                    {formatDateDDMMYYYY(purchase.date)}
+                  </div>
+                  <input
+                    type="date"
+                    value={purchase.date}
+                    onChange={(e) => handleUpdatePurchase(index, 'date', e.target.value)}
+                    className="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
+                  />
+                </div>
               </div>
             </div>
           ))}

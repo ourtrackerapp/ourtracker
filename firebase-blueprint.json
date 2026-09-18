@@ -92,6 +92,16 @@
     "portfolios/{portfolioId}/backups/{backupId}": {
       "schema": "Backup",
       "description": "Snapshot backups created by the user"
+    },
+    "ai_analysis_cache/{ticker}": {
+      "schema": "object",
+      "description": "Cached AI analysis results for stocks",
+      "properties": {
+        "ticker": { "type": "string" },
+        "analysis": { "type": "string" },
+        "timestamp": { "type": "number" },
+        "dataUsed": { "type": "object" }
+      }
     }
   }
 }

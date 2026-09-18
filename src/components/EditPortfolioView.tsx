@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { X, ChevronDown, Edit2, Trash2, Check, Loader2, Plus } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { formatDateDDMMYYYY } from '../utils/dateUtils';
 import {
   fetchPortfolioMeta,
   savePortfolioMeta,
@@ -134,9 +135,9 @@ export const EditPortfolioView: React.FC<EditPortfolioViewProps> = ({
             if (typeof d.date === 'string') {
               dateStr = d.date;
             } else if (typeof d.date === 'number') {
-              dateStr = new Date(d.date).toLocaleDateString('pt-PT');
+              dateStr = formatDateDDMMYYYY(d.date);
             } else {
-              dateStr = new Date().toLocaleDateString('pt-PT');
+              dateStr = formatDateDDMMYYYY(new Date());
             }
 
             return {
@@ -285,13 +286,7 @@ export const EditPortfolioView: React.FC<EditPortfolioViewProps> = ({
     const num = parseFloat(editDepositAmount.replace(',', '.'));
     if (isNaN(num) || num <= 0) return;
 
-    let formattedDate = editDepositDate;
-    if (editDepositDate.includes('-')) {
-      const [y, m, d] = editDepositDate.split('-');
-      if (y && m && d) {
-        formattedDate = `${d}/${m}/${y}`;
-      }
-    }
+    const formattedDate = formatDateDDMMYYYY(editDepositDate);
 
     const updated = deposits.map((d) => {
       if (d.id === editingDepositId) {
@@ -651,19 +646,7 @@ export const EditPortfolioView: React.FC<EditPortfolioViewProps> = ({
   // Formatar data para exibição
   const formatDisplayDate = (dateVal: number | string): string => {
     if (!dateVal) return '';
-    if (typeof dateVal === 'number') {
-      return new Date(dateVal).toLocaleDateString('pt-PT');
-    }
-    if (typeof dateVal === 'string') {
-      if (dateVal.includes('-')) {
-        const parts = dateVal.split('-');
-        if (parts.length === 3 && parts[0].length === 4) {
-          return `${parts[2]}/${parts[1]}/${parts[0]}`;
-        }
-      }
-      return dateVal;
-    }
-    return '';
+    return formatDateDDMMYYYY(dateVal);
   };
 
   return (
@@ -811,12 +794,17 @@ export const EditPortfolioView: React.FC<EditPortfolioViewProps> = ({
                                   placeholder="0.00"
                                   autoFocus
                                 />
-                                <input
-                                  type="date"
-                                  value={editDepositDate}
-                                  onChange={(e) => setEditDepositDate(e.target.value)}
-                                  className="w-28 py-1 px-1 bg-slate-50 border border-slate-200 rounded-lg text-[11px] font-medium text-slate-600 focus:outline-none focus:border-sky-500"
-                                />
+                                <div className="relative">
+                                  <div className="w-28 py-1 px-1 bg-slate-50 border border-slate-200 rounded-lg text-[11px] font-medium text-slate-600 flex items-center transition-all">
+                                    {formatDateDDMMYYYY(editDepositDate)}
+                                  </div>
+                                  <input
+                                    type="date"
+                                    value={editDepositDate}
+                                    onChange={(e) => setEditDepositDate(e.target.value)}
+                                    className="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
+                                  />
+                                </div>
                               </div>
                               <div className="flex items-center gap-1 shrink-0">
                                 <button
@@ -1013,6 +1001,10 @@ export const EditPortfolioView: React.FC<EditPortfolioViewProps> = ({
                           <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
                             Data da compra
                           </span>
+                        <div className="relative">
+                          <div className="w-full h-8 px-2.5 bg-white border border-slate-200 rounded-lg text-xs font-medium text-slate-700 flex items-center transition-all">
+                            {formatDateDDMMYYYY(addingPurchaseForTicker.date)}
+                          </div>
                           <input
                             type="date"
                             value={addingPurchaseForTicker.date}
@@ -1022,8 +1014,9 @@ export const EditPortfolioView: React.FC<EditPortfolioViewProps> = ({
                                 date: e.target.value,
                               })
                             }
-                            className="w-full h-8 px-2.5 bg-white border border-slate-200 rounded-lg text-xs font-medium text-slate-700 focus:outline-none focus:border-sky-500"
+                            className="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
                           />
+                        </div>
                         </div>
 
                         <div className="flex items-center justify-end gap-2 pt-1">
@@ -1192,17 +1185,22 @@ export const EditPortfolioView: React.FC<EditPortfolioViewProps> = ({
                                     <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
                                       Data da compra
                                     </span>
-                                    <input
-                                      type="date"
-                                      value={editingPurchase.date}
-                                      onChange={(e) =>
-                                        setEditingPurchase({
-                                          ...editingPurchase,
-                                          date: e.target.value,
-                                        })
-                                      }
-                                      className="w-full h-8 px-2.5 bg-white border border-slate-200 rounded-lg text-xs font-medium text-slate-700 focus:outline-none focus:border-sky-500"
-                                    />
+                                    <div className="relative">
+                                      <div className="w-full h-8 px-2.5 bg-white border border-slate-200 rounded-lg text-xs font-medium text-slate-700 flex items-center transition-all">
+                                        {formatDateDDMMYYYY(editingPurchase.date)}
+                                      </div>
+                                      <input
+                                        type="date"
+                                        value={editingPurchase.date}
+                                        onChange={(e) =>
+                                          setEditingPurchase({
+                                            ...editingPurchase,
+                                            date: e.target.value,
+                                          })
+                                        }
+                                        className="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
+                                      />
+                                    </div>
                                   </div>
 
                                   <div className="flex items-center justify-end gap-2 pt-1">

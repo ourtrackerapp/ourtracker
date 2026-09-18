@@ -1,5 +1,5 @@
 import React from 'react';
-import { Home, PieChart, Trophy, Settings } from 'lucide-react';
+import { Home, PieChart, Trophy, Settings, Sparkles } from 'lucide-react';
 import { TabType } from '../types';
 
 interface BottomTabBarProps {
@@ -38,7 +38,7 @@ export const BottomTabBar: React.FC<BottomTabBarProps> = ({
     <nav
       id="bottom-tab-bar"
       aria-label="Barra de navegação principal"
-      className="fixed bottom-0 left-0 right-0 z-50 bg-white/95 backdrop-blur-md border-t border-slate-100 pb-[env(safe-area-inset-bottom,12px)] pt-1.5 px-8"
+      className="fixed bottom-0 left-0 right-0 z-50 bg-gradient-to-t from-slate-200/95 via-slate-100/60 to-transparent pt-10 pb-[env(safe-area-inset-bottom,12px)] px-8 pointer-events-auto"
     >
       <div className="max-w-md mx-auto flex items-center justify-around gap-8">
         {tabs.map((tab) => {
@@ -49,14 +49,27 @@ export const BottomTabBar: React.FC<BottomTabBarProps> = ({
               id={`tab-btn-${tab.id}`}
               type="button"
               onClick={() => onTabChange(tab.id)}
-              className={`ios-touch-active flex flex-col items-center justify-center flex-1 py-0.5 min-h-[40px] cursor-pointer transition-colors duration-150 ${
+              className={`ios-touch-active relative flex flex-col items-center justify-center flex-1 py-1 min-h-[44px] cursor-pointer transition-all duration-200 ${
                 isActive
                   ? 'text-sky-500 font-bold'
                   : 'text-slate-400 font-medium active:text-slate-600'
               }`}
             >
-              <div className="relative flex items-center justify-center">
-                {tab.icon}
+              <div className="relative flex items-center justify-center p-1">
+                {/* Base icon */}
+                <div className={isActive ? 'text-sky-500' : 'text-slate-400'}>
+                  {tab.icon}
+                </div>
+
+                {/* Glance overlay: strictly clipped to icon stroke lines only */}
+                {isActive && (
+                  <div
+                    aria-hidden="true"
+                    className="absolute inset-0 flex items-center justify-center text-sky-800 pointer-events-none symbol-glance-overlay"
+                  >
+                    {tab.icon}
+                  </div>
+                )}
               </div>
               <span className="text-[10px] tracking-tight mt-0.5 whitespace-nowrap">
                 {tab.label}

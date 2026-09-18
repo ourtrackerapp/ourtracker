@@ -113,7 +113,8 @@ async function fetchTickerChart(ticker: string, apiPeriod: string): Promise<any[
   // Fallback direto em tempo real para o gráfico via Yahoo Finance Client
   try {
     const cleanSym = ticker.replace(/\.US$/i, '');
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(cleanSym)}?range=${encodeURIComponent(apiPeriod)}&interval=1d`;
+    const interval = (apiPeriod === '1d' || apiPeriod === '5d') ? '15m' : '1d';
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(cleanSym)}?range=${encodeURIComponent(apiPeriod)}&interval=${interval}&includePrePost=true`;
     const yRes = await fetch(url);
     if (yRes.ok) {
       const yData = await yRes.json();
@@ -146,7 +147,7 @@ export async function fetchHomeChartData(
 
   const holdingTickers = Array.from(new Set(holdings.map((h) => h.ticker).filter(Boolean)));
   const benchmarkTickers: string[] = [];
-  if (includeSp500) benchmarkTickers.push('SXR8.DE');
+  if (includeSp500) benchmarkTickers.push('SPY');
 
   const allTickersToFetch = Array.from(new Set([...holdingTickers, ...benchmarkTickers]));
   if (allTickersToFetch.length === 0) {
@@ -260,24 +261,20 @@ export async function fetchHomeChartData(
   const firstDepositTime = depositEvents.length > 0 ? depositEvents[0].timestamp : sortedTimestamps[0];
 
   if (period === '1D') {
-    const now = new Date();
-    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).getTime();
-    const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999).getTime();
-    const nowTime = now.getTime();
+    // Sliding window: last 24 hours from now
+    const nowMs = Date.now();
+    const twentyFourHoursAgo = nowMs - 24 * 3600 * 1000;
     
-    // Filter points between local midnight and now
-    let todayTimestamps = sortedTimestamps.filter((t) => t >= startOfDay && t <= nowTime);
+    let recentTimestamps = sortedTimestamps.filter((t) => t >= twentyFourHoursAgo);
     
-    // Always ensure start of day (midnight 00:00) and current time are included
-    if (todayTimestamps.length === 0 || todayTimestamps[0] > startOfDay) {
-      todayTimestamps = [startOfDay, ...todayTimestamps];
-    }
-    if (todayTimestamps[todayTimestamps.length - 1] < nowTime) {
-      todayTimestamps = [...todayTimestamps, nowTime];
+    // Fallback: if very few points in last 24h (e.g. weekend), take last 100 points
+    if (recentTimestamps.length < 5) {
+      recentTimestamps = sortedTimestamps.slice(-100);
     }
     
-    sortedTimestamps = todayTimestamps;
-  } else if (period === 'YTD') {
+    sortedTimestamps = recentTimestamps;
+  }
+ else if (period === 'YTD') {
     // YTD deve começar rigorosamente no início do ano civil (1 de Janeiro do ano corrente)
     const now = new Date();
     const startOfYear = new Date(now.getFullYear(), 0, 1, 0, 0, 0, 0).getTime();
@@ -305,7 +302,7 @@ export async function fetchHomeChartData(
   }
 
   // --- BENCHMARK DETAILED AUDIT / BREAKDOWN LOGGING FOR USER TEST ---
-  const auditBenchmarks = ['SXR8.DE', 'SXRV.DE', 'IWM'];
+  const auditBenchmarks = ['SPY', 'SXRV.DE', 'IWM'];
   auditBenchmarks.forEach((bm) => {
     if (benchmarkTickers.includes(bm)) {
       console.log(`\n================ AUDIT BENCHMARK: ${bm} ================\n`);
@@ -433,8 +430,8 @@ export async function fetchHomeChartData(
 
       // Benchmarks TWR & Capital
       if (includeSp500) {
-        const prevSp = getTickerPriceAt('SXR8.DE', prevT);
-        const currSp = getTickerPriceAt('SXR8.DE', t);
+        const prevSp = getTickerPriceAt('SPY', prevT);
+        const currSp = getTickerPriceAt('SPY', t);
         const spReturn = prevSp > 0 ? (currSp - prevSp) / prevSp : 0;
         spIndex = spIndex * (1 + spReturn);
         spCapital = (spCapital * (1 + spReturn)) + cashInflow;
@@ -469,15 +466,12 @@ export async function fetchHomeChartData(
       if (t < firstDepositTime || totalDepositsUpToT === 0) {
         pointItem.sp500 = { capitalValue: 0, returnPercent: 0, euroChange: 0 };
       } else {
-        let spReturnPercent = 0;
+        let spReturnPercent = isNaN(spIndex - 100) ? 0 : (spIndex - 100);
         let spEuroChange = 0;
         
         if (period === 'Tudo') {
-          // For 'Tudo', we use simple calculation since initial capital is 0
           spEuroChange = spCapital - totalDepositsUpToT;
-          spReturnPercent = totalDepositsUpToT > 0 ? ((spCapital - totalDepositsUpToT) / totalDepositsUpToT) * 100 : 0;
         } else {
-          spReturnPercent = isNaN(spIndex - 100) ? 0 : (spIndex - 100);
           spEuroChange = spCapital - initialWindowCapital - windowNetDeposits;
         }
 
@@ -515,4 +509,40 @@ export async function fetchAllTimeTwrBaseline(
     return null;
   }
 }
+
+export interface TopCardMetricsInput {
+  totalValue: number;
+  totalInvested: number;
+  totalDeposited?: number;
+  allTimeTwrBaseline?: {
+    baseIndex: number;
+    baseCapital: number;
+    lastTimestamp: number;
+  } | null;
+  depositsList?: any[];
+}
+
+export interface TopCardMetricsOutput {
+  displayTotalEquity: number;
+  topCardProfit: number;
+  topCardTwrPercent: number;
+}
+
+/**
+ * Função para calcular os valores apresentados no topo da Home tab.
+ * Foca-se estritamente nas ações e no respetivo rendimento, ignorando depósitos.
+ */
+export function calculateTopCardMetrics(input: TopCardMetricsInput): TopCardMetricsOutput {
+  const displayTotalEquity = Math.max(0, input.totalValue);
+  const topCardProfit = input.totalValue - input.totalInvested;
+  const returnPercent =
+    input.totalInvested > 0 ? (topCardProfit / input.totalInvested) * 100 : 0;
+
+  return {
+    displayTotalEquity,
+    topCardProfit,
+    topCardTwrPercent: isNaN(returnPercent) ? 0 : returnPercent,
+  };
+}
+
 

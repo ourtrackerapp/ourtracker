@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, Plus, Trash2, Search, ArrowRight, RotateCcw, AlertCircle, Calculator, ChevronLeft, Edit2, Check } from 'lucide-react';
+import { X, Plus, Trash2, Search, ArrowRight, AlertCircle, Calculator, ChevronLeft, Edit2, Check, Sparkles } from 'lucide-react';
 import { getShortDescription } from '../utils/tickerHelper';
 import { PortfolioPosition } from '../types';
+import { AiAnalystModal } from './AiAnalystModal';
 
 export interface AllocationTarget {
   id: string;
@@ -11,23 +12,34 @@ export interface AllocationTarget {
   targetPercent: number;
 }
 
-export const DEFAULT_ALLOCATION_TARGETS: AllocationTarget[] = [
-  { id: '1', ticker: 'SXR8.DE', name: 'S&P 500', targetPercent: 50 },
-  { id: '2', ticker: 'SMH', name: 'Semicondutores', targetPercent: 12 },
-  { id: '3', ticker: 'GOOGL', name: 'Alphabet', targetPercent: 5 },
-  { id: '4', ticker: 'LEU', name: 'Centrus Energy', targetPercent: 5 },
-  { id: '5', ticker: '000660.KS', name: 'SK Hynix', targetPercent: 6 },
-  { id: '6', ticker: 'SKM', name: 'SK Telecom', targetPercent: 5 },
-  { id: '7', ticker: 'ORCL', name: 'Oracle', targetPercent: 5 },
-  { id: '8', ticker: 'AMZN', name: 'Amazon', targetPercent: 4 },
-  { id: '9', ticker: 'SPCX.US', name: 'SpaceX', targetPercent: 6 },
-  { id: '10', ticker: 'NOW', name: 'ServiceNow', targetPercent: 2 },
-];
+export const DEFAULT_ALLOCATION_TARGETS: AllocationTarget[] = [];
+
+export function createTargetsFromPositions(positions: PortfolioPosition[]): AllocationTarget[] {
+  if (!positions || positions.length === 0) return [];
+  const totalPosValue = positions.reduce((acc, p) => acc + (p.value || 0), 0);
+  
+  return positions.map((p, idx) => {
+    let targetPct = 0;
+    if (totalPosValue > 0 && p.value !== undefined) {
+      targetPct = Number(((p.value / totalPosValue) * 100).toFixed(1));
+    } else if (positions.length > 0) {
+      targetPct = Number((100 / positions.length).toFixed(1));
+    }
+    
+    return {
+      id: `target_${p.ticker}_${idx}`,
+      ticker: p.ticker,
+      name: getShortDescription(p.ticker, p.name || p.ticker),
+      targetPercent: targetPct,
+    };
+  });
+}
 
 export const POPULAR_ASSETS: Array<{ symbol: string; shortname: string; exchange?: string; isPopular?: boolean }> = [
   // Top Index & Sector ETFs
+  { symbol: 'SPY', shortname: 'SPDR S&P 500 ETF Trust', exchange: 'NYSE', isPopular: true },
+  { symbol: 'VOO', shortname: 'Vanguard S&P 500 ETF', exchange: 'NYSE', isPopular: true },
   { symbol: 'SXR8.DE', shortname: 'iShares Core S&P 500 UCITS ETF', exchange: 'XETRA', isPopular: true },
-  { symbol: 'VUAA.DE', shortname: 'Vanguard S&P 500 UCITS ETF', exchange: 'XETRA', isPopular: true },
   { symbol: 'SMH', shortname: 'VanEck Semiconductor ETF', exchange: 'NASDAQ', isPopular: true },
   { symbol: 'QDVE.DE', shortname: 'iShares S&P 500 Tech Sector ETF', exchange: 'XETRA', isPopular: true },
   { symbol: 'VWCE.DE', shortname: 'Vanguard FTSE All-World UCITS ETF', exchange: 'XETRA', isPopular: true },
@@ -95,6 +107,7 @@ function findMatchingPosition(
 
   // 3. Known aliases & keywords
   const aliases: Record<string, string[]> = {
+    'SPY': ['sp500', 's&p 500', 's&p', 'sp 500', 'ishares core s&p 500', 'sxr8', 'vuaa', 'voo', 'spy'],
     'SXR8.DE': ['sp500', 's&p 500', 's&p', 'sp 500', 'ishares core s&p 500', 'sxr8', 'vuaa', 'voo', 'spy'],
     'SMH': ['semicondutores', 'semiconductor', 'vaneck semiconductor', 'vvsm', 'smh', 'soxx', 'soxq'],
     'GOOGL': ['alphabet', 'google', 'googl', 'goog'],
@@ -134,6 +147,9 @@ interface ContributionCalculatorModalProps {
   onClose: () => void;
   positions?: PortfolioPosition[];
   totalValue?: number;
+  initialTargets?: AllocationTarget[];
+  initialAmount?: string;
+  onNavigateToAnalysis?: () => void;
 }
 
 // Swipeable Item Component with Edit & Delete actions
@@ -300,29 +316,67 @@ const SwipeableTargetItem: React.FC<{
   );
 };
 
-export const ContributionCalculatorModal: React.FC<ContributionCalculatorModalProps> = ({
-  isOpen,
-  onClose,
-  positions = [],
-  totalValue = 0,
-}) => {
+export const ContributionCalculatorModal: React.FC<ContributionCalculatorModalProps> = (props) => {
+  const {
+    isOpen,
+    onClose,
+    positions = [],
+    totalValue = 0,
+    initialTargets,
+    initialAmount,
+    onNavigateToAnalysis,
+  } = props;
   const [step, setStep] = useState<'input_amount' | 'results'>('input_amount');
   const [amountInput, setAmountInput] = useState<string>('');
   const [amount, setAmount] = useState<number>(0);
   const [swipedId, setSwipedId] = useState<string | null>(null);
+  const [selectedTickerForAi, setSelectedTickerForAi] = useState<string | null>(null);
 
   const [targets, setTargets] = useState<AllocationTarget[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          // Check if this has old hardcoded dummy tickers like SPY or 000660.KS
+          const isLegacy = parsed.some((t: any) => t.ticker === 'SPY' || t.ticker === '000660.KS');
+          if (!isLegacy) return parsed;
+        }
       }
     } catch {
       // ignore
     }
-    return DEFAULT_ALLOCATION_TARGETS;
+    return createTargetsFromPositions(positions);
   });
+
+  // Sync targets dynamically when modal opens with positions
+  useEffect(() => {
+    if (isOpen && positions && positions.length > 0) {
+      setTargets((prev) => {
+        // If targets is empty or has old legacy defaults, initialize strictly from current portfolio positions
+        const isLegacy = prev.some((t) => t.ticker === 'SPY' || t.ticker === '000660.KS');
+        if (prev.length === 0 || isLegacy) {
+          return createTargetsFromPositions(positions);
+        }
+
+        // Keep existing targets (and user modifications / added stocks), but make sure every current position is included
+        const existingTickers = new Set(prev.map((t) => t.ticker.toUpperCase()));
+        const missingFromPortfolio = positions
+          .filter((p) => !existingTickers.has(p.ticker.toUpperCase()))
+          .map((p, idx) => ({
+            id: `target_${p.ticker}_${Date.now()}_${idx}`,
+            ticker: p.ticker,
+            name: getShortDescription(p.ticker, p.name || p.ticker),
+            targetPercent: p.allocationPercent ? Number(p.allocationPercent.toFixed(1)) : 5,
+          }));
+
+        if (missingFromPortfolio.length > 0) {
+          return [...prev, ...missingFromPortfolio];
+        }
+        return prev;
+      });
+    }
+  }, [isOpen, positions]);
 
   // Search state for adding a new stock
   const [isSearching, setIsSearching] = useState(false);
@@ -354,16 +408,28 @@ export const ContributionCalculatorModal: React.FC<ContributionCalculatorModalPr
     }
   }, [targets]);
 
-  // Reset when opening
+  const prevIsOpenRef = useRef(false);
+
+  // Reset ONLY when modal transitions from closed to open
   useEffect(() => {
-    if (isOpen) {
-      setStep('input_amount');
-      setAmountInput('');
+    if (isOpen && !prevIsOpenRef.current) {
+      if (initialTargets) {
+        setTargets(initialTargets);
+      }
+      if (initialAmount) {
+        setAmountInput(initialAmount);
+        setAmount(parseFloat(initialAmount.replace(',', '.')));
+        setStep('results');
+      } else {
+        setStep('input_amount');
+        setAmountInput('');
+      }
       setIsSearching(false);
       setSearchQuery('');
       setSwipedId(null);
     }
-  }, [isOpen]);
+    prevIsOpenRef.current = isOpen;
+  }, [isOpen, positions, initialTargets, initialAmount]);
 
   // Search API handler with debounce
   useEffect(() => {
@@ -514,10 +580,6 @@ export const ContributionCalculatorModal: React.FC<ContributionCalculatorModalPr
 
   const handleDeleteTarget = (id: string) => {
     setTargets((prev) => prev.filter((t) => t.id !== id));
-  };
-
-  const handleResetDefaults = () => {
-    setTargets(DEFAULT_ALLOCATION_TARGETS);
   };
 
   const handleSelectSearchResult = (quote: { symbol: string; shortname: string }) => {
@@ -739,11 +801,14 @@ export const ContributionCalculatorModal: React.FC<ContributionCalculatorModalPr
                     </button>
                     <button
                       type="button"
-                      onClick={handleResetDefaults}
-                      title="Restaurar predefinições"
-                      className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-200/60 rounded-lg transition-colors cursor-pointer"
+                      onClick={() => {
+                        const defaultTicker = calculatedAllocations[0]?.ticker || positions[0]?.ticker || 'SXR8.DE';
+                        setSelectedTickerForAi(defaultTicker);
+                      }}
+                      className="px-2.5 py-1 text-xs font-bold text-white bg-purple-500 hover:bg-purple-600 rounded-lg transition-colors cursor-pointer flex items-center gap-1"
                     >
-                      <RotateCcw className="w-3.5 h-3.5" />
+                      <Sparkles className="w-3 h-3 fill-current" />
+                      <span>Usar AI</span>
                     </button>
                   </div>
                 </div>
@@ -758,20 +823,67 @@ export const ContributionCalculatorModal: React.FC<ContributionCalculatorModalPr
                   </div>
                 )}
 
-                {/* List of Allocation Targets with Swipe Left actions */}
-                <div className="flex-1 overflow-y-auto px-3 py-2 space-y-1">
-                  {calculatedAllocations.map((item) => (
-                    <SwipeableTargetItem
-                      key={item.id}
-                      item={item}
-                      totalValue={totalValue}
-                      onDelete={handleDeleteTarget}
-                      onPercentChange={handlePercentChange}
-                      isOpenedId={swipedId}
-                      setIsOpenedId={setSwipedId}
-                    />
-                  ))}
-                </div>
+        {/* List of Allocation Targets with Swipe Left actions */}
+        <div className="flex-1 overflow-y-auto px-3 py-2 space-y-1">
+          {calculatedAllocations.map((item) => (
+            <div key={item.id} className="relative">
+              <SwipeableTargetItem
+                item={item}
+                totalValue={totalValue}
+                onDelete={handleDeleteTarget}
+                onPercentChange={handlePercentChange}
+                isOpenedId={swipedId}
+                setIsOpenedId={setSwipedId}
+              />
+            </div>
+          ))}
+        </div>
+
+        {/* AI Analyst Modal */}
+        <AiAnalystModal
+          isOpen={selectedTickerForAi !== null}
+          ticker={selectedTickerForAi || ''}
+          totalAporte={amount}
+          onClose={() => setSelectedTickerForAi(null)}
+          onSelectTicker={(t) => setSelectedTickerForAi(t)}
+          onApplyAllocations={(allocs) => {
+            if (allocs && allocs.length > 0) {
+              setTargets((prev) => {
+                const newTargets = [...prev];
+                allocs.forEach((alloc: any) => {
+                  const idx = newTargets.findIndex(
+                    (t) => t.ticker.toUpperCase() === alloc.ticker.toUpperCase()
+                  );
+                  if (idx >= 0) {
+                    newTargets[idx] = {
+                      ...newTargets[idx],
+                      targetPercent: Number(alloc.percentage.toFixed(1)),
+                    };
+                  } else {
+                    newTargets.push({
+                      id: `ai_${alloc.ticker}_${Date.now()}`,
+                      ticker: alloc.ticker,
+                      name: getShortDescription(alloc.ticker, alloc.ticker),
+                      targetPercent: Number(alloc.percentage.toFixed(1)),
+                    });
+                  }
+                });
+                return newTargets;
+              });
+            }
+            setSelectedTickerForAi(null);
+          }}
+          allPositions={
+            positions && positions.length > 0
+              ? positions
+              : calculatedAllocations.map((a) => ({
+                  ticker: a.ticker,
+                  quantity: 0,
+                  avgPrice: 0,
+                  currentPrice: 0,
+                }))
+          }
+        />
 
                 {/* Add new stock button */}
                 <div className="p-3 border-t border-slate-100 bg-slate-50/60 shrink-0">

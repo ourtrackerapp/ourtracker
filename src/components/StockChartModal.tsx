@@ -7,10 +7,20 @@ import {
   X,
   DollarSign,
   Scale,
-  Sparkles,
+  Plus,
+  Search,
+  Target,
+  TrendingUp,
+  BarChart2,
+  PieChart,
+  Building2,
+  Users,
+  ShieldAlert,
+  Wallet,
 } from 'lucide-react';
 import { PortfolioPosition, HoldingDoc, PurchaseRecord } from '../types';
 import { getShortDescription } from '../utils/tickerHelper';
+import { METRIC_EXPLANATIONS, generateCustomMetricComparison } from '../utils/metricExplanations';
 
 interface ChartPoint {
   timestamp: number;
@@ -36,18 +46,74 @@ interface StockMetrics {
   fiftyTwoWeekHighEur?: number | null;
   fiftyTwoWeekLowEur?: number | null;
   fiftyTwoWeekRangePercent?: number | null;
+
+  // Valuation
   pe?: number | null;
+  forwardPE?: number | null;
+  pegRatio?: number | null;
   pb?: number | null;
   ps?: number | null;
+  evEbitda?: number | null;
+  evRevenue?: number | null;
   eps?: number | null;
   epsEur?: number | null;
+  forwardEps?: number | null;
+  forwardEpsEur?: number | null;
   beta?: number | null;
+
+  // Wall Street Targets
   targetPrice?: number | null;
   targetPriceEur?: number | null;
+  targetHigh?: number | null;
+  targetHighEur?: number | null;
+  targetLow?: number | null;
+  targetLowEur?: number | null;
+  targetMedian?: number | null;
+  targetMedianEur?: number | null;
+  targetUpsidePercent?: number | null;
+
+  // Recommendations
   recommendation?: string | null;
+  recommendationMean?: number | null;
+  numberOfAnalystOpinions?: number | null;
+  recommendationTrend?: {
+    strongBuy: number;
+    buy: number;
+    hold: number;
+    underperform: number;
+    sell: number;
+  } | null;
+
+  // Profitability & Margins
+  profitMargins?: number | null;
+  operatingMargins?: number | null;
+  grossMargins?: number | null;
+  returnOnEquity?: number | null;
+  returnOnAssets?: number | null;
+
+  // Balance Sheet & Cash
+  totalCash?: number | null;
+  totalCashEur?: number | null;
+  totalDebt?: number | null;
+  totalDebtEur?: number | null;
+  currentRatio?: number | null;
+  debtToEquity?: number | null;
+  freeCashflow?: number | null;
+  freeCashflowEur?: number | null;
+  marketCap?: number | null;
+  marketCapEur?: number | null;
+
+  // Ownership & Short Sentiment
+  heldPercentInstitutions?: number | null;
+  heldPercentInsiders?: number | null;
+  shortPercentOfFloat?: number | null;
+
+  // Dividends & Calendar
   dividendYield?: number | null;
   dividendRate?: number | null;
   dividendRateEur?: number | null;
+  payoutRatio?: number | null;
+  fiveYearAvgDividendYield?: number | null;
   exDividendDate?: string | null;
   earningsDate?: string | null;
 }
@@ -114,6 +180,16 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
   const [hasError, setHasError] = useState<boolean>(false);
   const [scrubIndex, setScrubIndex] = useState<number | null>(null);
 
+  // Benchmark state
+  const [benchmarkTicker, setBenchmarkTicker] = useState<string>('');
+  const [benchmarkData, setBenchmarkData] = useState<ChartResponse | null>(null);
+  const [isBenchmarkLoading, setIsBenchmarkLoading] = useState<boolean>(false);
+  const [benchmarkError, setBenchmarkError] = useState<boolean>(false);
+  const [showBenchmarkInput, setShowBenchmarkInput] = useState<boolean>(false);
+  const [benchmarkSearchQuery, setBenchmarkSearchQuery] = useState<string>('');
+  const [benchmarkSearchResults, setBenchmarkSearchResults] = useState<any[]>([]);
+  const [isSearchingBenchmark, setIsSearchingBenchmark] = useState<boolean>(false);
+
   // Two-Finger Range Selection: [startIdx, endIdx]
   const [twoFingerRange, setTwoFingerRange] = useState<[number, number] | null>(null);
 
@@ -139,6 +215,9 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
     highEur: number;
     lowEur: number;
   } | null>(null);
+
+  // Selected metric for explanation modal/bottom sheet
+  const [selectedMetricId, setSelectedMetricId] = useState<string | null>(null);
 
   // Determine if stock is US-based (USD currency)
   const isUsd = useMemo(() => {
@@ -251,10 +330,77 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
 
     fetchChart();
 
+    // Auto refresh stock chart every 1 minute (60,000 ms)
+    const interval = setInterval(fetchChart, 60000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [isOpen, position?.ticker, selectedRange]);
+
+  // Fetch benchmark data
+  useEffect(() => {
+    if (!isOpen || !benchmarkTicker) {
+      setBenchmarkData(null);
+      return;
+    }
+
+    let isMounted = true;
+    setIsBenchmarkLoading(true);
+    setBenchmarkError(false);
+
+    const fetchBenchmark = async () => {
+      try {
+        const res = await fetch(`/api/chart/${encodeURIComponent(benchmarkTicker)}?range=${selectedRange}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data: ChartResponse = await res.json();
+        if (isMounted) {
+          if (!data || !data.points || data.points.length === 0) {
+            setBenchmarkError(true);
+          } else {
+            setBenchmarkData(data);
+          }
+        }
+      } catch (err) {
+        console.error('Error loading benchmark:', err);
+        if (isMounted) setBenchmarkError(true);
+      } finally {
+        if (isMounted) setIsBenchmarkLoading(false);
+      }
+    };
+
+    fetchBenchmark();
+
     return () => {
       isMounted = false;
     };
-  }, [isOpen, position?.ticker, selectedRange]);
+  }, [isOpen, benchmarkTicker, selectedRange]);
+
+  // Benchmark Search effect
+  useEffect(() => {
+    const timer = setTimeout(async () => {
+      if (benchmarkSearchQuery.trim().length < 2) {
+        setBenchmarkSearchResults([]);
+        return;
+      }
+
+      setIsSearchingBenchmark(true);
+      try {
+        const res = await fetch(`/api/search?q=${encodeURIComponent(benchmarkSearchQuery)}`);
+        if (res.ok) {
+          const data = await res.json();
+          setBenchmarkSearchResults(data.quotes || []);
+        }
+      } catch (err) {
+        console.error('Benchmark search error:', err);
+      } finally {
+        setIsSearchingBenchmark(false);
+      }
+    }, 400);
+
+    return () => clearTimeout(timer);
+  }, [benchmarkSearchQuery]);
 
   // Observe SVG container width
   useEffect(() => {
@@ -271,7 +417,44 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
     return () => observer.disconnect();
   }, [isOpen, chartData]);
 
-  const rawPoints = chartData?.points || [];
+  const rawPoints = useMemo(() => {
+    const raw = chartData?.points || [];
+    let pts = selectedRange === '1d' ? raw.filter((pt) => pt.isMarketOpen) : [...raw];
+    if (pts.length === 0) pts = [...raw];
+    if (pts.length === 0) return [];
+
+    // Garantir deterministamente que o último ponto do gráfico termina no valor atual da ação
+    const targetPriceEur = position?.currentPrice ?? chartData?.currentPriceEur;
+    const targetPriceNative = isUsd 
+      ? (position?.nativePrice ?? chartData?.currentPrice ?? targetPriceEur)
+      : (targetPriceEur ?? position?.nativePrice ?? chartData?.currentPrice);
+
+    if (targetPriceEur != null && targetPriceEur > 0) {
+      const last = pts[pts.length - 1];
+      const nowTs = Date.now();
+      const timeDiff = nowTs - last.timestamp;
+      
+      // Se a última vela for de hoje (menos de 4 horas de diferença), atualiza o preço para a cotação atual
+      if (timeDiff < 1000 * 60 * 60 * 4) {
+        pts[pts.length - 1] = {
+          ...last,
+          price: targetPriceNative ?? last.price,
+          priceEur: targetPriceEur,
+        };
+      } else {
+        // Se pertencer a um fecho anterior (ex: range 1M, 1y com velas diárias), anexa ponto em tempo real
+        pts.push({
+          timestamp: nowTs,
+          date: new Date(nowTs).toISOString(),
+          price: targetPriceNative ?? targetPriceEur,
+          priceEur: targetPriceEur,
+          isMarketOpen: true,
+        });
+      }
+    }
+
+    return pts;
+  }, [chartData?.points, chartData?.currentPrice, chartData?.currentPriceEur, selectedRange, position?.currentPrice, position?.nativePrice, isUsd]);
 
   // Filter points based on zoom window
   const points = useMemo(() => {
@@ -280,6 +463,52 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
     const [start, end] = zoomWindow;
     return rawPoints.slice(Math.max(0, start), Math.min(rawPoints.length, end + 1));
   }, [rawPoints, zoomWindow]);
+
+  const benchmarkPoints = useMemo(() => {
+    const raw = benchmarkData?.points || [];
+    if (raw.length === 0) return [];
+    
+    // For 1d, filter market hours
+    let filtered = selectedRange === '1d' ? raw.filter(pt => pt.isMarketOpen) : [...raw];
+    if (filtered.length === 0) filtered = [...raw];
+
+    const targetPriceEur = benchmarkData?.currentPriceEur;
+    const targetPriceNative = benchmarkData?.currentPrice ?? targetPriceEur;
+
+    if (targetPriceEur != null && targetPriceEur > 0) {
+      const last = filtered[filtered.length - 1];
+      const nowTs = Date.now();
+      const timeDiff = nowTs - last.timestamp;
+      if (timeDiff < 1000 * 60 * 60 * 4) {
+        filtered[filtered.length - 1] = {
+          ...last,
+          price: targetPriceNative ?? last.price,
+          priceEur: targetPriceEur,
+        };
+      } else {
+        filtered.push({
+          timestamp: nowTs,
+          date: new Date(nowTs).toISOString(),
+          price: targetPriceNative ?? targetPriceEur,
+          priceEur: targetPriceEur,
+          isMarketOpen: true,
+        });
+      }
+    }
+
+    if (!zoomWindow) return filtered;
+    
+    // Attempt to align zoom window by timestamp ratio if index doesn't match perfectly
+    // (Benchmarks might have slightly different number of points)
+    const [startIdx, endIdx] = zoomWindow;
+    const startRatio = startIdx / Math.max(1, rawPoints.length - 1);
+    const endRatio = endIdx / Math.max(1, rawPoints.length - 1);
+    
+    const bStart = Math.floor(startRatio * (filtered.length - 1));
+    const bEnd = Math.ceil(endRatio * (filtered.length - 1));
+    
+    return filtered.slice(bStart, bEnd + 1);
+  }, [benchmarkData?.points, benchmarkData?.currentPrice, benchmarkData?.currentPriceEur, selectedRange, zoomWindow, rawPoints.length]);
 
   // All purchase records for this holding
   const purchaseRecords: PurchaseRecord[] = useMemo(() => {
@@ -338,12 +567,13 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
     return Math.min(...purchaseRecords.map((p) => p.date));
   }, [purchaseRecords]);
 
-  // Calculate SVG curve coordinates, horizontal line, and purchase gradient area
   const {
     fullPathD,
     areaD,
     coordinates,
     horizontalLineY,
+    benchmarkPathD,
+    benchmarkCoordinates,
   } = useMemo(() => {
     if (points.length === 0) {
       return {
@@ -351,34 +581,81 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
         areaD: '',
         coordinates: [],
         horizontalLineY: 130,
+        benchmarkPathD: '',
+        benchmarkCoordinates: [],
       };
     }
-
-    const prices = points.map((p) => (isUsd ? (p.price ?? p.priceEur) : p.priceEur));
-    const min = Math.min(...prices);
-    const max = Math.max(...prices);
-    const paddingY = (max - min) * 0.12 || max * 0.05 || 1;
-    const yMin = Math.max(0, min - paddingY);
-    const yMax = max + paddingY;
 
     const w = svgDimensions.width || 360;
     const h = svgDimensions.height || 260;
     const marginX = 8;
     const usableWidth = w - marginX * 2;
 
+    // Normalization logic: if benchmark is present, we use percentage returns
+    const useNormalization = benchmarkPoints.length > 0;
+    
+    let mainPrices: number[] = [];
+    let bPrices: number[] = [];
+
+    if (useNormalization) {
+      const startP = isUsd ? (points[0].price ?? points[0].priceEur) : points[0].priceEur;
+      mainPrices = points.map(p => {
+        const val = isUsd ? (p.price ?? p.priceEur) : p.priceEur;
+        return ((val / (startP || 1)) - 1) * 100;
+      });
+
+      const bStartP = isUsd ? (benchmarkPoints[0].price ?? benchmarkPoints[0].priceEur) : benchmarkPoints[0].priceEur;
+      bPrices = benchmarkPoints.map(p => {
+        const val = isUsd ? (p.price ?? p.priceEur) : p.priceEur;
+        return ((val / (bStartP || 1)) - 1) * 100;
+      });
+    } else {
+      mainPrices = points.map((p) => (isUsd ? (p.price ?? p.priceEur) : p.priceEur));
+    }
+
+    const allPrices = useNormalization ? [...mainPrices, ...bPrices] : mainPrices;
+    const min = Math.min(...allPrices);
+    const max = Math.max(...allPrices);
+    const paddingY = (max - min) * 0.15 || (Math.abs(max) > 0 ? Math.abs(max) * 0.1 : 1);
+    const yMin = min - paddingY;
+    const yMax = max + paddingY;
+
+    // Helper to calculate Y coordinate
+    const getY = (val: number) => {
+      const yRatio = (val - yMin) / (yMax - yMin || 1);
+      return h - (yRatio * (h - 40) + 20);
+    };
+
     const coords = points.map((p, idx) => {
-      const pVal = isUsd ? (p.price ?? p.priceEur) : p.priceEur;
       const x = marginX + (idx / Math.max(1, points.length - 1)) * usableWidth;
-      const yRatio = (pVal - yMin) / (yMax - yMin || 1);
-      const y = h - (yRatio * (h - 36) + 18);
-      return { x, y, point: p, index: idx };
+      const y = getY(mainPrices[idx]);
+      return { x, y, point: p, index: idx, normalizedVal: useNormalization ? mainPrices[idx] : undefined };
     });
 
-    const refStartPrice = isUsd
+    let bCoords: any[] = [];
+    let bPath = '';
+    if (useNormalization && benchmarkPoints.length > 0) {
+      bCoords = benchmarkPoints.map((p, idx) => {
+        const x = marginX + (idx / Math.max(1, benchmarkPoints.length - 1)) * usableWidth;
+        const y = getY(bPrices[idx]);
+        return { x, y, point: p, index: idx, normalizedVal: bPrices[idx] };
+      });
+
+      if (bCoords.length > 1) {
+        bPath = `M ${bCoords[0].x.toFixed(1)},${bCoords[0].y.toFixed(1)}`;
+        for (let i = 0; i < bCoords.length - 1; i++) {
+          const c = bCoords[i];
+          const n = bCoords[i + 1];
+          const cpX = (c.x + n.x) / 2;
+          bPath += ` C ${cpX.toFixed(1)},${c.y.toFixed(1)} ${cpX.toFixed(1)},${n.y.toFixed(1)} ${n.x.toFixed(1)},${n.y.toFixed(1)}`;
+        }
+      }
+    }
+
+    const refStartValue = useNormalization ? 0 : (isUsd
       ? (chartData?.windowMetrics?.startPriceNative ?? points[0]?.price ?? points[0]?.priceEur)
-      : (chartData?.windowMetrics?.startPriceEur ?? points[0]?.priceEur);
-    const startYRatio = (refStartPrice - yMin) / (yMax - yMin || 1);
-    const hLineY = h - (startYRatio * (h - 36) + 18);
+      : (chartData?.windowMetrics?.startPriceEur ?? points[0]?.priceEur));
+    const hLineY = getY(refStartValue);
 
     if (coords.length === 1) {
       return {
@@ -386,10 +663,12 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
         areaD: `M 0,${coords[0].y} L ${w},${coords[0].y} L ${w},${h} L 0,${h} Z`,
         coordinates: coords,
         horizontalLineY: hLineY,
+        benchmarkPathD: bPath,
+        benchmarkCoordinates: bCoords,
       };
     }
 
-    // Base path (completely solid continuous Bezier curve)
+    // Base path
     let fullD = `M ${coords[0].x.toFixed(1)},${coords[0].y.toFixed(1)}`;
     for (let i = 0; i < coords.length - 1; i++) {
       const c = coords[i];
@@ -398,43 +677,44 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
       fullD += ` C ${cpX.toFixed(1)},${c.y.toFixed(1)} ${cpX.toFixed(1)},${n.y.toFixed(1)} ${n.x.toFixed(1)},${n.y.toFixed(1)}`;
     }
 
-    // Find coordinate corresponding to first purchase date
-    let firstPurchaseIdx = 0;
-    if (earliestPurchaseTimestamp) {
-      const firstTs = coords[0].point.timestamp;
-      const lastTs = coords[coords.length - 1].point.timestamp;
-
-      if (earliestPurchaseTimestamp > firstTs && earliestPurchaseTimestamp <= lastTs) {
-        let minDiff = Infinity;
-        for (let i = 0; i < coords.length; i++) {
-          const diff = Math.abs(coords[i].point.timestamp - earliestPurchaseTimestamp);
-          if (diff < minDiff) {
-            minDiff = diff;
-            firstPurchaseIdx = i;
-          }
-        }
-      } else if (earliestPurchaseTimestamp <= firstTs) {
-        firstPurchaseIdx = 0;
-      }
-    }
-
     // Gradient area starts STRICTLY from first purchase
     let areaPath = '';
-    const sliceCoords = coords.slice(firstPurchaseIdx);
+    if (!useNormalization) {
+      let firstPurchaseIdx = 0;
+      if (earliestPurchaseTimestamp) {
+        const firstTs = coords[0].point.timestamp;
+        const lastTs = coords[coords.length - 1].point.timestamp;
 
-    if (sliceCoords.length > 1) {
-      const startCoord = sliceCoords[0];
-      const endCoord = sliceCoords[sliceCoords.length - 1];
-
-      let curveD = `M ${startCoord.x.toFixed(1)},${startCoord.y.toFixed(1)}`;
-      for (let i = 0; i < sliceCoords.length - 1; i++) {
-        const c = sliceCoords[i];
-        const n = sliceCoords[i + 1];
-        const cpX = (c.x + n.x) / 2;
-        curveD += ` C ${cpX.toFixed(1)},${c.y.toFixed(1)} ${cpX.toFixed(1)},${n.y.toFixed(1)} ${n.x.toFixed(1)},${n.y.toFixed(1)}`;
+        if (earliestPurchaseTimestamp > firstTs && earliestPurchaseTimestamp <= lastTs) {
+          let minDiff = Infinity;
+          for (let i = 0; i < coords.length; i++) {
+            const diff = Math.abs(coords[i].point.timestamp - earliestPurchaseTimestamp);
+            if (diff < minDiff) {
+              minDiff = diff;
+              firstPurchaseIdx = i;
+            }
+          }
+        } else if (earliestPurchaseTimestamp <= firstTs) {
+          firstPurchaseIdx = 0;
+        }
       }
 
-      areaPath = `${curveD} L ${endCoord.x.toFixed(1)},${h} L ${startCoord.x.toFixed(1)},${h} Z`;
+      const sliceCoords = coords.slice(firstPurchaseIdx);
+
+      if (sliceCoords.length > 1) {
+        const startCoord = sliceCoords[0];
+        const endCoord = sliceCoords[sliceCoords.length - 1];
+
+        let curveD = `M ${startCoord.x.toFixed(1)},${startCoord.y.toFixed(1)}`;
+        for (let i = 0; i < sliceCoords.length - 1; i++) {
+          const c = sliceCoords[i];
+          const n = sliceCoords[i + 1];
+          const cpX = (c.x + n.x) / 2;
+          curveD += ` C ${cpX.toFixed(1)},${c.y.toFixed(1)} ${cpX.toFixed(1)},${n.y.toFixed(1)} ${n.x.toFixed(1)},${n.y.toFixed(1)}`;
+        }
+
+        areaPath = `${curveD} L ${endCoord.x.toFixed(1)},${h} L ${startCoord.x.toFixed(1)},${h} Z`;
+      }
     }
 
     return {
@@ -442,8 +722,10 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
       areaD: areaPath,
       coordinates: coords,
       horizontalLineY: hLineY,
+      benchmarkPathD: bPath,
+      benchmarkCoordinates: bCoords,
     };
-  }, [points, svgDimensions, earliestPurchaseTimestamp]);
+  }, [points, benchmarkPoints, svgDimensions, earliestPurchaseTimestamp, isUsd, chartData]);
 
   // Position purchase markers on the curve
   const purchaseMarkers = useMemo(() => {
@@ -609,6 +891,15 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
   const diffPercentFromStart = startPrice > 0 ? (diffFromStart / startPrice) * 100 : 0;
   const isPositive = diffFromStart >= 0;
 
+  // Benchmark return for the visible window
+  const benchmarkPerf = useMemo(() => {
+    if (!benchmarkPoints || benchmarkPoints.length < 2) return null;
+    const first = isUsd ? (benchmarkPoints[0].price ?? benchmarkPoints[0].priceEur) : benchmarkPoints[0].priceEur;
+    const last = isUsd ? (benchmarkPoints[benchmarkPoints.length - 1].price ?? benchmarkPoints[benchmarkPoints.length - 1].priceEur) : benchmarkPoints[benchmarkPoints.length - 1].priceEur;
+    if (!first || first === 0) return 0;
+    return ((last / first) - 1) * 100;
+  }, [benchmarkPoints, isUsd]);
+
   const getIndexFromClientX = (clientX: number) => {
     if (!svgRef.current || coordinates.length === 0) return 0;
     const rect = svgRef.current.getBoundingClientRect();
@@ -731,16 +1022,76 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
   const has52wRange = metrics?.fiftyTwoWeekHighEur != null && metrics?.fiftyTwoWeekLowEur != null;
   const hasValuation =
     metrics?.pe != null ||
+    metrics?.forwardPE != null ||
+    metrics?.pegRatio != null ||
     metrics?.pb != null ||
     metrics?.ps != null ||
+    metrics?.evEbitda != null ||
+    metrics?.evRevenue != null ||
     metrics?.epsEur != null ||
+    metrics?.forwardEpsEur != null ||
     metrics?.beta != null;
-  const hasEstimates = metrics?.targetPriceEur != null || metrics?.recommendation != null;
+
+  const hasEstimates =
+    metrics?.targetPriceEur != null ||
+    metrics?.recommendation != null ||
+    metrics?.numberOfAnalystOpinions != null ||
+    metrics?.recommendationTrend != null;
+
+  const hasProfitability =
+    metrics?.profitMargins != null ||
+    metrics?.operatingMargins != null ||
+    metrics?.grossMargins != null ||
+    metrics?.returnOnEquity != null ||
+    metrics?.returnOnAssets != null;
+
+  const hasBalanceSheet =
+    metrics?.totalCashEur != null ||
+    metrics?.totalDebtEur != null ||
+    metrics?.currentRatio != null ||
+    metrics?.debtToEquity != null ||
+    metrics?.freeCashflowEur != null ||
+    metrics?.marketCapEur != null;
+
+  const hasOwnership =
+    metrics?.heldPercentInstitutions != null ||
+    metrics?.heldPercentInsiders != null ||
+    metrics?.shortPercentOfFloat != null;
+
   const hasDividends =
     metrics?.dividendYield != null ||
     metrics?.dividendRateEur != null ||
+    metrics?.payoutRatio != null ||
+    metrics?.fiveYearAvgDividendYield != null ||
     metrics?.exDividendDate != null;
+
   const hasEarnings = metrics?.earningsDate != null;
+
+  const customComparison = selectedMetricId && position
+    ? generateCustomMetricComparison({
+        metricId: selectedMetricId,
+        ticker: position.ticker,
+        name: position.name,
+        currentPrice: isUsd
+          ? (position.nativePrice ?? chartData?.currentPrice ?? position.currentPrice)
+          : (position.currentPrice ?? chartData?.currentPriceEur),
+        metrics: metrics,
+        currencySymbol: currencySymbol,
+        isUsd: isUsd,
+        shares: position.shares || 0,
+      })
+    : null;
+
+  const formatLargeNum = (val: number | null | undefined, prefix: string = '') => {
+    if (val == null) return '-';
+    const abs = Math.abs(val);
+    const sign = val < 0 ? '-' : '';
+    if (abs >= 1e12) return `${sign}${prefix}${(abs / 1e12).toFixed(2)}T`;
+    if (abs >= 1e9) return `${sign}${prefix}${(abs / 1e9).toFixed(2)}B`;
+    if (abs >= 1e6) return `${sign}${prefix}${(abs / 1e6).toFixed(2)}M`;
+    if (abs >= 1e3) return `${sign}${prefix}${(abs / 1e3).toFixed(1)}k`;
+    return `${sign}${prefix}${abs.toFixed(2)}`;
+  };
 
   return (
     <AnimatePresence>
@@ -788,27 +1139,36 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                 </span>
               </div>
 
-              <div className="flex items-center gap-2 mt-1.5">
-                <span
-                  className={`text-sm font-medium tabular-nums flex items-center gap-0.5 ${
-                    isPositive ? 'text-emerald-600' : 'text-rose-600'
-                  }`}
-                >
-                  <span>{isPositive ? '↗' : '↘'}</span>
-                  <span>{Math.abs(diffPercentFromStart).toFixed(2)}%</span>
-                </span>
+              <div className="flex flex-col gap-0.5 mt-2">
+                {/* Main Ticker Row */}
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider w-11">
+                    {position.ticker}
+                  </span>
+                  <span className={`text-[12px] font-bold tabular-nums ${isPositive ? 'text-emerald-600' : 'text-rose-600'}`}>
+                    {isPositive ? '+' : ''}{diffPercentFromStart.toFixed(2)}%
+                  </span>
+                  {!benchmarkTicker && (
+                    <span className="text-[12px] font-medium text-slate-400 tabular-nums ml-0.5">
+                      ({isPositive ? '+' : '-'}{currencySymbol}{Math.abs(diffFromStart).toLocaleString('pt-PT', {
+                        minimumFractionDigits: 2,
+                        maximumFractionDigits: 2,
+                      })})
+                    </span>
+                  )}
+                </div>
 
-                <span
-                  className={`text-sm font-medium tabular-nums ${
-                    isPositive ? 'text-emerald-600' : 'text-rose-600'
-                  }`}
-                >
-                  {isPositive ? '+' : '-'}{currencySymbol}
-                  {Math.abs(diffFromStart).toLocaleString('pt-PT', {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2,
-                  })}
-                </span>
+                {/* Benchmark Row */}
+                {benchmarkTicker && benchmarkPerf !== null && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider w-11">
+                      {benchmarkTicker}
+                    </span>
+                    <span className={`text-[12px] font-bold tabular-nums ${benchmarkPerf >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                      {benchmarkPerf >= 0 ? '+' : ''}{benchmarkPerf.toFixed(2)}%
+                    </span>
+                  </div>
+                )}
               </div>
 
               <div className="h-[36px] mt-1 flex flex-col justify-center">
@@ -927,12 +1287,26 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                     />
                   )}
 
+                  {/* Benchmark Line */}
+                  {benchmarkPathD && (
+                    <path
+                      d={benchmarkPathD}
+                      fill="none"
+                      stroke="#f59e0b"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      className="transition-all duration-300"
+                      strokeDasharray="1 0"
+                    />
+                  )}
+
                   {/* Solid Continuous Line */}
                   <path
                     d={fullPathD}
                     fill="none"
                     stroke="#0284c7"
-                    strokeWidth="1.2"
+                    strokeWidth="1.5"
                     strokeLinecap="round"
                     strokeLinejoin="round"
                     className="transition-all duration-200"
@@ -987,8 +1361,26 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                         x2={activeCoord.x}
                         y2={svgDimensions.height}
                         stroke="#94a3b8"
-                        strokeWidth="0.9"
-                        opacity="0.9"
+                        strokeWidth="1.2"
+                        opacity="1"
+                      />
+                      {benchmarkCoordinates.length > 0 && (
+                        <circle
+                          cx={activeCoord.x}
+                          cy={benchmarkCoordinates[Math.min(benchmarkCoordinates.length - 1, Math.round((activeCoord.x - 8) / (svgDimensions.width - 16) * (benchmarkCoordinates.length - 1)))].y}
+                          r="3"
+                          fill="#f59e0b"
+                          stroke="white"
+                          strokeWidth="1.5"
+                        />
+                      )}
+                      <circle
+                        cx={activeCoord.x}
+                        cy={activeCoord.y}
+                        r="4"
+                        fill="#0284c7"
+                        stroke="white"
+                        strokeWidth="1.5"
                       />
                     </g>
                   )}
@@ -1020,18 +1412,48 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
 
                 {activeCoord && scrubIndex !== null && !twoFingerStats && (
                   <div
-                    className="absolute pointer-events-none transform -translate-x-1/2 top-0 text-[11px] font-semibold text-slate-500 bg-white/90 px-1.5 py-0.5 rounded shadow-xs backdrop-blur-xs z-10 flex items-center gap-1"
+                    className="absolute pointer-events-none transform -translate-x-1/2 top-0 text-[11px] font-bold text-slate-600 bg-white/95 px-2 py-1 rounded-lg shadow-lg border border-slate-100 backdrop-blur-sm z-30 flex flex-col items-center gap-0.5"
                     style={{
                       left: `${(activeCoord.x / (svgDimensions.width || 1)) * 100}%`,
                     }}
                   >
-                    {new Date(activeCoord.point.timestamp).toLocaleDateString('pt-PT', {
-                      day: '2-digit',
-                      month: 'short',
-                      year: selectedRange === '1y' || selectedRange === 'max' ? 'numeric' : undefined,
-                      hour: selectedRange === '1d' || selectedRange === '1w' ? '2-digit' : undefined,
-                      minute: selectedRange === '1d' || selectedRange === '1w' ? '2-digit' : undefined,
-                    })}
+                    <span className="text-slate-400 text-[10px] whitespace-nowrap mb-0.5">
+                      {new Date(activeCoord.point.timestamp).toLocaleDateString('pt-PT', {
+                        day: '2-digit',
+                        month: 'short',
+                        year: selectedRange === '1y' || selectedRange === 'max' ? 'numeric' : undefined,
+                        hour: selectedRange === '1d' || selectedRange === '1w' ? '2-digit' : undefined,
+                        minute: selectedRange === '1d' || selectedRange === '1w' ? '2-digit' : undefined,
+                      })}
+                    </span>
+                    
+                    <div className="flex flex-col gap-0.5">
+                      <div className="flex items-center justify-between gap-3 min-w-[80px]">
+                        <span className="text-sky-600 font-black">{position.ticker}</span>
+                        <span className={`font-black tabular-nums ${activeCoord.normalizedVal !== undefined ? (activeCoord.normalizedVal >= 0 ? 'text-emerald-600' : 'text-rose-600') : 'text-slate-900'}`}>
+                          {activeCoord.normalizedVal !== undefined 
+                            ? `${activeCoord.normalizedVal >= 0 ? '+' : ''}${activeCoord.normalizedVal.toFixed(2)}%`
+                            : `${currencySymbol}${(isUsd ? (activeCoord.point.price ?? activeCoord.point.priceEur) : activeCoord.point.priceEur).toFixed(2)}`
+                          }
+                        </span>
+                      </div>
+                      
+                      {benchmarkCoordinates.length > 0 && (() => {
+                        // Find benchmark point at same relative index
+                        const bIdx = Math.min(benchmarkCoordinates.length - 1, Math.round((activeCoord.x - 8) / (svgDimensions.width - 16) * (benchmarkCoordinates.length - 1)));
+                        const bCoord = benchmarkCoordinates[bIdx];
+                        if (!bCoord) return null;
+                        
+                        return (
+                          <div className="flex items-center justify-between gap-3 min-w-[80px] border-t border-slate-50 mt-0.5 pt-0.5">
+                            <span className="text-amber-600 font-black">{benchmarkTicker}</span>
+                            <span className={`font-black tabular-nums ${bCoord.normalizedVal >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                              {bCoord.normalizedVal >= 0 ? '+' : ''}{bCoord.normalizedVal.toFixed(2)}%
+                            </span>
+                          </div>
+                        );
+                      })()}
+                    </div>
                   </div>
                 )}
 
@@ -1092,6 +1514,89 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
               </div>
             )}
           </div>
+
+          {/* Benchmark Action Bar (Matching Home tab design) */}
+          <div className="w-full flex justify-end items-center px-5 pt-0 pb-1">
+            {!benchmarkTicker && (
+              <button
+                type="button"
+                onClick={() => setShowBenchmarkInput(!showBenchmarkInput)}
+                className="text-sm font-medium text-slate-400 hover:text-slate-600 transition-colors flex items-center gap-1.5 focus:outline-none"
+              >
+                <span>+</span>
+                <span>Benchmark</span>
+              </button>
+            )}
+
+            {benchmarkTicker && (
+              <div className="flex items-center gap-1.5 text-xs font-bold text-slate-400">
+                <span className="uppercase tracking-wider">{benchmarkTicker}</span>
+                <button 
+                  onClick={() => {
+                    setBenchmarkTicker('');
+                    setBenchmarkData(null);
+                    setShowBenchmarkInput(false);
+                  }}
+                  className="p-1 -mr-1 hover:text-slate-600 transition-colors"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Benchmark Search Input */}
+          <AnimatePresence>
+            {showBenchmarkInput && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                className="px-5 relative z-50 mb-2"
+              >
+                <div className="relative">
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                    <input
+                      type="text"
+                      value={benchmarkSearchQuery}
+                      onChange={(e) => setBenchmarkSearchQuery(e.target.value)}
+                      placeholder="Comparar com (ex: SPY, AAPL...)"
+                      className="w-full h-10 pl-9 pr-4 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
+                      autoFocus
+                    />
+                    {isSearchingBenchmark && (
+                      <RefreshCw className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 animate-spin" />
+                    )}
+                  </div>
+
+                  {benchmarkSearchResults.length > 0 && (
+                    <div className="absolute bottom-full left-0 right-0 mb-1 bg-white border border-slate-200 rounded-xl shadow-2xl z-[60] max-h-48 overflow-y-auto p-1">
+                      {benchmarkSearchResults.map((res) => (
+                        <button
+                          key={res.symbol}
+                          type="button"
+                          onClick={() => {
+                            setBenchmarkTicker(res.symbol);
+                            setShowBenchmarkInput(false);
+                            setBenchmarkSearchQuery('');
+                            setBenchmarkSearchResults([]);
+                          }}
+                          className="w-full flex items-center justify-between p-2.5 hover:bg-slate-50 rounded-lg transition-colors text-left"
+                        >
+                          <div className="flex flex-col">
+                            <span className="text-sm font-bold text-slate-900">{res.symbol}</span>
+                            <span className="text-[10px] text-slate-500 truncate max-w-[200px]">{res.shortname || res.longname}</span>
+                          </div>
+                          <Plus className="w-3 h-3 text-slate-400" />
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           {/* Time Range Selector */}
           <div className="px-5 py-2 shrink-0">
@@ -1165,17 +1670,147 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
               </div>
             )}
 
+            {/* Informational tip */}
+            <div className="flex items-center justify-between px-1 text-[11px] font-bold text-slate-400">
+              <span className="uppercase tracking-wider">Métricas & Fundamentais</span>
+            </div>
+
+            {hasEstimates && (
+              <div>
+                <div className="text-[11px] font-black text-slate-400 uppercase tracking-wider mb-2 px-1 flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <Target className="w-3.5 h-3.5 text-sky-600" />
+                    <span>Wall Street & Analistas</span>
+                  </div>
+                  {metrics?.numberOfAnalystOpinions != null && (
+                    <span className="text-[10px] font-bold text-slate-400">
+                      {metrics.numberOfAnalystOpinions} analistas
+                    </span>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {(isUsd ? (metrics?.targetPrice ?? metrics?.targetPriceEur) : metrics?.targetPriceEur) != null && (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedMetricId('targetPrice')}
+                      className="bg-slate-50/90 hover:bg-sky-50/50 border border-slate-100 hover:border-sky-200 rounded-2xl p-3 col-span-2 cursor-pointer transition-all active:scale-[0.98] group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 group-hover:text-sky-700">Preço-Alvo Médio</span>
+                        {metrics?.targetUpsidePercent != null && (
+                          <span
+                            className={`text-xs font-black tabular-nums px-1.5 py-0.5 rounded-md ${
+                              metrics.targetUpsidePercent >= 0
+                                ? 'bg-emerald-50 text-emerald-700'
+                                : 'bg-rose-50 text-rose-700'
+                            }`}
+                          >
+                            {metrics.targetUpsidePercent >= 0 ? '+' : ''}
+                            {metrics.targetUpsidePercent.toFixed(2)}%
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xl font-black text-slate-900 mt-1 tabular-nums">
+                        {currencySymbol}{(isUsd ? (metrics?.targetPrice ?? metrics?.targetPriceEur) : metrics?.targetPriceEur)?.toFixed(2)}
+                      </div>
+                      {(metrics?.targetLowEur != null || metrics?.targetHighEur != null) && (
+                        <div className="flex items-center justify-between text-[10px] font-bold text-slate-400 mt-2 pt-2 border-t border-slate-200/60 tabular-nums">
+                          <span>Mín: {currencySymbol}{(isUsd ? (metrics?.targetLow ?? metrics?.targetLowEur) : metrics?.targetLowEur)?.toFixed(2)}</span>
+                          <span>Med: {currencySymbol}{(isUsd ? (metrics?.targetMedian ?? metrics?.targetMedianEur) : metrics?.targetMedianEur)?.toFixed(2)}</span>
+                          <span>Máx: {currencySymbol}{(isUsd ? (metrics?.targetHigh ?? metrics?.targetHighEur) : metrics?.targetHighEur)?.toFixed(2)}</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {metrics?.recommendation != null && (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedMetricId('recommendation')}
+                      className="bg-slate-50/90 hover:bg-sky-50/50 border border-slate-100 hover:border-sky-200 rounded-2xl p-3 col-span-2 cursor-pointer transition-all active:scale-[0.98] group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 group-hover:text-sky-700">Consenso de Compra</span>
+                        {metrics?.recommendationMean != null && (
+                          <span className="text-[10px] font-bold text-slate-400">
+                            Nota: {metrics.recommendationMean.toFixed(1)}/5.0
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-base font-black text-emerald-700 mt-1 truncate">
+                        {metrics.recommendation}
+                      </div>
+
+                      {metrics?.recommendationTrend && (
+                        <div className="mt-2 pt-2 border-t border-slate-200/60">
+                          <div className="flex h-2 rounded-full overflow-hidden gap-0.5">
+                            {metrics.recommendationTrend.strongBuy > 0 && (
+                              <div
+                                style={{ flex: metrics.recommendationTrend.strongBuy }}
+                                className="bg-emerald-600"
+                                title={`Compra Forte: ${metrics.recommendationTrend.strongBuy}`}
+                              />
+                            )}
+                            {metrics.recommendationTrend.buy > 0 && (
+                              <div
+                                style={{ flex: metrics.recommendationTrend.buy }}
+                                className="bg-emerald-400"
+                                title={`Compra: ${metrics.recommendationTrend.buy}`}
+                              />
+                            )}
+                            {metrics.recommendationTrend.hold > 0 && (
+                              <div
+                                style={{ flex: metrics.recommendationTrend.hold }}
+                                className="bg-amber-400"
+                                title={`Manter: ${metrics.recommendationTrend.hold}`}
+                              />
+                            )}
+                            {metrics.recommendationTrend.underperform > 0 && (
+                              <div
+                                style={{ flex: metrics.recommendationTrend.underperform }}
+                                className="bg-rose-300"
+                                title={`Abaixo da média: ${metrics.recommendationTrend.underperform}`}
+                              />
+                            )}
+                            {metrics.recommendationTrend.sell > 0 && (
+                              <div
+                                style={{ flex: metrics.recommendationTrend.sell }}
+                                className="bg-rose-600"
+                                title={`Venda: ${metrics.recommendationTrend.sell}`}
+                              />
+                            )}
+                          </div>
+                          <div className="flex justify-between text-[9px] font-semibold text-slate-400 mt-1">
+                            <span>{metrics.recommendationTrend.strongBuy + metrics.recommendationTrend.buy} Compra</span>
+                            <span>{metrics.recommendationTrend.hold} Manter</span>
+                            <span>{metrics.recommendationTrend.underperform + metrics.recommendationTrend.sell} Venda</span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             {hasValuation && (
               <div>
                 <div className="text-[11px] font-black text-slate-400 uppercase tracking-wider mb-2 px-1 flex items-center gap-1.5">
                   <Scale className="w-3.5 h-3.5 text-slate-400" />
-                  <span>Indicadores Fundamentais</span>
+                  <span>Múltiplos de Avaliação (Valuation)</span>
                 </div>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                   {metrics?.pe != null && (
-                    <div className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3">
-                      <div className="text-[11px] font-bold text-slate-400">
-                        <span>P/E (Preço/Lucro)</span>
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedMetricId('pe')}
+                      className="bg-slate-50/90 hover:bg-sky-50/50 border border-slate-100 hover:border-sky-200 rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.98] group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 group-hover:text-sky-700">P/E Atual</span>
                       </div>
                       <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
                         {metrics.pe.toFixed(2)}
@@ -1183,10 +1818,47 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                     </div>
                   )}
 
+                  {metrics?.forwardPE != null && (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedMetricId('forwardPE')}
+                      className="bg-slate-50/90 hover:bg-sky-50/50 border border-slate-100 hover:border-sky-200 rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.98] group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 group-hover:text-sky-700">Forward P/E</span>
+                      </div>
+                      <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
+                        {metrics.forwardPE.toFixed(2)}
+                      </div>
+                    </div>
+                  )}
+
+                  {metrics?.pegRatio != null && (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedMetricId('pegRatio')}
+                      className="bg-slate-50/90 hover:bg-sky-50/50 border border-slate-100 hover:border-sky-200 rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.98] group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 group-hover:text-sky-700">PEG Ratio</span>
+                      </div>
+                      <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
+                        {metrics.pegRatio.toFixed(2)}
+                      </div>
+                    </div>
+                  )}
+
                   {metrics?.pb != null && (
-                    <div className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3">
-                      <div className="text-[11px] font-bold text-slate-400">
-                        <span>P/B (Preço/Valor)</span>
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedMetricId('pb')}
+                      className="bg-slate-50/90 hover:bg-sky-50/50 border border-slate-100 hover:border-sky-200 rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.98] group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 group-hover:text-sky-700">P/B (Preço/Valor)</span>
                       </div>
                       <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
                         {metrics.pb.toFixed(2)}
@@ -1195,9 +1867,14 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                   )}
 
                   {metrics?.ps != null && (
-                    <div className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3">
-                      <div className="text-[11px] font-bold text-slate-400">
-                        <span>P/S (Preço/Vendas)</span>
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedMetricId('ps')}
+                      className="bg-slate-50/90 hover:bg-sky-50/50 border border-slate-100 hover:border-sky-200 rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.98] group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 group-hover:text-sky-700">P/S (Preço/Vendas)</span>
                       </div>
                       <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
                         {metrics.ps.toFixed(2)}
@@ -1205,10 +1882,31 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                     </div>
                   )}
 
+                  {metrics?.evEbitda != null && (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedMetricId('evEbitda')}
+                      className="bg-slate-50/90 hover:bg-sky-50/50 border border-slate-100 hover:border-sky-200 rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.98] group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 group-hover:text-sky-700">EV / EBITDA</span>
+                      </div>
+                      <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
+                        {metrics.evEbitda.toFixed(2)}
+                      </div>
+                    </div>
+                  )}
+
                   {(isUsd ? (metrics?.eps ?? metrics?.epsEur) : metrics?.epsEur) != null && (
-                    <div className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3">
-                      <div className="text-[11px] font-bold text-slate-400">
-                        <span>EPS (Lucro/Ação)</span>
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedMetricId('eps')}
+                      className="bg-slate-50/90 hover:bg-sky-50/50 border border-slate-100 hover:border-sky-200 rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.98] group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 group-hover:text-sky-700">EPS Atual</span>
                       </div>
                       <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
                         {currencySymbol}{(isUsd ? (metrics?.eps ?? metrics?.epsEur) : metrics?.epsEur)?.toFixed(2)}
@@ -1216,10 +1914,31 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                     </div>
                   )}
 
+                  {(isUsd ? (metrics?.forwardEps ?? metrics?.forwardEpsEur) : metrics?.forwardEpsEur) != null && (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedMetricId('forwardEps')}
+                      className="bg-slate-50/90 hover:bg-sky-50/50 border border-slate-100 hover:border-sky-200 rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.98] group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 group-hover:text-sky-700">Forward EPS</span>
+                      </div>
+                      <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
+                        {currencySymbol}{(isUsd ? (metrics?.forwardEps ?? metrics?.forwardEpsEur) : metrics?.forwardEpsEur)?.toFixed(2)}
+                      </div>
+                    </div>
+                  )}
+
                   {metrics?.beta != null && (
-                    <div className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3">
-                      <div className="text-[11px] font-bold text-slate-400">
-                        <span>Beta (Volatilidade)</span>
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedMetricId('beta')}
+                      className="bg-slate-50/90 hover:bg-sky-50/50 border border-slate-100 hover:border-sky-200 rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.98] group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 group-hover:text-sky-700">Beta (Risco)</span>
                       </div>
                       <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
                         {metrics.beta.toFixed(2)}
@@ -1230,31 +1949,253 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
               </div>
             )}
 
-            {hasEstimates && (
+            {hasProfitability && (
               <div>
                 <div className="text-[11px] font-black text-slate-400 uppercase tracking-wider mb-2 px-1 flex items-center gap-1.5">
-                  <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                  <span>Estimativas & Previsões</span>
+                  <TrendingUp className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Rentabilidade & Margens</span>
                 </div>
-                <div className="grid grid-cols-2 gap-2">
-                  {(isUsd ? (metrics?.targetPrice ?? metrics?.targetPriceEur) : metrics?.targetPriceEur) != null && (
-                    <div className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3">
-                      <div className="text-[11px] font-bold text-slate-400">
-                        <span>Preço-Alvo Médio</span>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {metrics?.profitMargins != null && (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedMetricId('profitMargins')}
+                      className="bg-slate-50/90 hover:bg-sky-50/50 border border-slate-100 hover:border-sky-200 rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.98] group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 group-hover:text-sky-700">Margem Líquida</span>
                       </div>
-                      <div className="text-base font-black text-sky-700 mt-1 tabular-nums">
-                        {currencySymbol}{(isUsd ? (metrics?.targetPrice ?? metrics?.targetPriceEur) : metrics?.targetPriceEur)?.toFixed(2)}
+                      <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
+                        {metrics.profitMargins.toFixed(2)}%
                       </div>
                     </div>
                   )}
 
-                  {metrics?.recommendation != null && (
-                    <div className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3">
-                      <div className="text-[11px] font-bold text-slate-400">
-                        <span>Recomendação</span>
+                  {metrics?.operatingMargins != null && (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedMetricId('operatingMargins')}
+                      className="bg-slate-50/90 hover:bg-sky-50/50 border border-slate-100 hover:border-sky-200 rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.98] group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 group-hover:text-sky-700">Margem Operacional</span>
                       </div>
-                      <div className="text-sm font-black text-emerald-700 mt-1.5 truncate">
-                        {metrics.recommendation}
+                      <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
+                        {metrics.operatingMargins.toFixed(2)}%
+                      </div>
+                    </div>
+                  )}
+
+                  {metrics?.grossMargins != null && (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedMetricId('grossMargins')}
+                      className="bg-slate-50/90 hover:bg-sky-50/50 border border-slate-100 hover:border-sky-200 rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.98] group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 group-hover:text-sky-700">Margem Bruta</span>
+                      </div>
+                      <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
+                        {metrics.grossMargins.toFixed(2)}%
+                      </div>
+                    </div>
+                  )}
+
+                  {metrics?.returnOnEquity != null && (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedMetricId('returnOnEquity')}
+                      className="bg-slate-50/90 hover:bg-sky-50/50 border border-slate-100 hover:border-sky-200 rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.98] group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 group-hover:text-sky-700">ROE (Cap. Próprio)</span>
+                      </div>
+                      <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
+                        {metrics.returnOnEquity.toFixed(2)}%
+                      </div>
+                    </div>
+                  )}
+
+                  {metrics?.returnOnAssets != null && (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedMetricId('returnOnAssets')}
+                      className="bg-slate-50/90 hover:bg-sky-50/50 border border-slate-100 hover:border-sky-200 rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.98] group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 group-hover:text-sky-700">ROA (Ativos)</span>
+                      </div>
+                      <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
+                        {metrics.returnOnAssets.toFixed(2)}%
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {hasBalanceSheet && (
+              <div>
+                <div className="text-[11px] font-black text-slate-400 uppercase tracking-wider mb-2 px-1 flex items-center gap-1.5">
+                  <Building2 className="w-3.5 h-3.5 text-sky-600" />
+                  <span>Balanço, Caixa & Dívida</span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {(isUsd ? (metrics?.marketCap ?? metrics?.marketCapEur) : metrics?.marketCapEur) != null && (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedMetricId('marketCap')}
+                      className="bg-slate-50/90 hover:bg-sky-50/50 border border-slate-100 hover:border-sky-200 rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.98] group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 group-hover:text-sky-700">Capitalização</span>
+                      </div>
+                      <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
+                        {formatLargeNum(isUsd ? (metrics?.marketCap ?? metrics?.marketCapEur) : metrics?.marketCapEur, currencySymbol)}
+                      </div>
+                    </div>
+                  )}
+
+                  {(isUsd ? (metrics?.totalCash ?? metrics?.totalCashEur) : metrics?.totalCashEur) != null && (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedMetricId('totalCash')}
+                      className="bg-slate-50/90 hover:bg-sky-50/50 border border-slate-100 hover:border-sky-200 rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.98] group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 group-hover:text-sky-700">Caixa Total</span>
+                      </div>
+                      <div className="text-base font-black text-emerald-600 mt-1 tabular-nums">
+                        {formatLargeNum(isUsd ? (metrics?.totalCash ?? metrics?.totalCashEur) : metrics?.totalCashEur, currencySymbol)}
+                      </div>
+                    </div>
+                  )}
+
+                  {(isUsd ? (metrics?.totalDebt ?? metrics?.totalDebtEur) : metrics?.totalDebtEur) != null && (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedMetricId('totalDebt')}
+                      className="bg-slate-50/90 hover:bg-sky-50/50 border border-slate-100 hover:border-sky-200 rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.98] group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 group-hover:text-sky-700">Dívida Total</span>
+                      </div>
+                      <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
+                        {formatLargeNum(isUsd ? (metrics?.totalDebt ?? metrics?.totalDebtEur) : metrics?.totalDebtEur, currencySymbol)}
+                      </div>
+                    </div>
+                  )}
+
+                  {(isUsd ? (metrics?.freeCashflow ?? metrics?.freeCashflowEur) : metrics?.freeCashflowEur) != null && (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedMetricId('freeCashflow')}
+                      className="bg-slate-50/90 hover:bg-sky-50/50 border border-slate-100 hover:border-sky-200 rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.98] group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 group-hover:text-sky-700">Free Cash Flow</span>
+                      </div>
+                      <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
+                        {formatLargeNum(isUsd ? (metrics?.freeCashflow ?? metrics?.freeCashflowEur) : metrics?.freeCashflowEur, currencySymbol)}
+                      </div>
+                    </div>
+                  )}
+
+                  {metrics?.currentRatio != null && (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedMetricId('currentRatio')}
+                      className="bg-slate-50/90 hover:bg-sky-50/50 border border-slate-100 hover:border-sky-200 rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.98] group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 group-hover:text-sky-700">Current Ratio</span>
+                      </div>
+                      <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
+                        {metrics.currentRatio.toFixed(2)}
+                      </div>
+                    </div>
+                  )}
+
+                  {metrics?.debtToEquity != null && (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedMetricId('debtToEquity')}
+                      className="bg-slate-50/90 hover:bg-sky-50/50 border border-slate-100 hover:border-sky-200 rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.98] group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 group-hover:text-sky-700">Dívida / Capital</span>
+                      </div>
+                      <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
+                        {metrics.debtToEquity.toFixed(1)}%
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {hasOwnership && (
+              <div>
+                <div className="text-[11px] font-black text-slate-400 uppercase tracking-wider mb-2 px-1 flex items-center gap-1.5">
+                  <Users className="w-3.5 h-3.5 text-indigo-500" />
+                  <span>Detenção & Sentimento Institucional</span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {metrics?.heldPercentInstitutions != null && (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedMetricId('heldPercentInstitutions')}
+                      className="bg-slate-50/90 hover:bg-sky-50/50 border border-slate-100 hover:border-sky-200 rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.98] group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 group-hover:text-sky-700">Institucionais</span>
+                      </div>
+                      <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
+                        {metrics.heldPercentInstitutions.toFixed(2)}%
+                      </div>
+                    </div>
+                  )}
+
+                  {metrics?.heldPercentInsiders != null && (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedMetricId('heldPercentInsiders')}
+                      className="bg-slate-50/90 hover:bg-sky-50/50 border border-slate-100 hover:border-sky-200 rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.98] group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 group-hover:text-sky-700">Insiders</span>
+                      </div>
+                      <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
+                        {metrics.heldPercentInsiders.toFixed(2)}%
+                      </div>
+                    </div>
+                  )}
+
+                  {metrics?.shortPercentOfFloat != null && (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedMetricId('shortPercentOfFloat')}
+                      className="bg-slate-50/90 hover:bg-sky-50/50 border border-slate-100 hover:border-sky-200 rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.98] group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 group-hover:text-sky-700">Short Interest</span>
+                      </div>
+                      <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
+                        {metrics.shortPercentOfFloat.toFixed(2)}%
                       </div>
                     </div>
                   )}
@@ -1268,11 +2209,16 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                   <DollarSign className="w-3.5 h-3.5 text-emerald-600" />
                   <span>Dividendos & Calendário</span>
                 </div>
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                   {metrics?.dividendYield != null && (
-                    <div className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3">
-                      <div className="text-[11px] font-bold text-slate-400">
-                        <span>Dividend Yield</span>
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedMetricId('dividendYield')}
+                      className="bg-slate-50/90 hover:bg-sky-50/50 border border-slate-100 hover:border-sky-200 rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.98] group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 group-hover:text-sky-700">Dividend Yield</span>
                       </div>
                       <div className="text-base font-black text-emerald-600 mt-1 tabular-nums">
                         {metrics.dividendYield.toFixed(2)}%
@@ -1281,9 +2227,14 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                   )}
 
                   {(isUsd ? (metrics?.dividendRate ?? metrics?.dividendRateEur) : metrics?.dividendRateEur) != null && (
-                    <div className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3">
-                      <div className="text-[11px] font-bold text-slate-400">
-                        <span>Dividendo / Ação</span>
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedMetricId('dividendRate')}
+                      className="bg-slate-50/90 hover:bg-sky-50/50 border border-slate-100 hover:border-sky-200 rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.98] group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 group-hover:text-sky-700">Dividendo Anual</span>
                       </div>
                       <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
                         {currencySymbol}{(isUsd ? (metrics?.dividendRate ?? metrics?.dividendRateEur) : metrics?.dividendRateEur)?.toFixed(2)}
@@ -1291,10 +2242,47 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                     </div>
                   )}
 
+                  {metrics?.payoutRatio != null && (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedMetricId('payoutRatio')}
+                      className="bg-slate-50/90 hover:bg-sky-50/50 border border-slate-100 hover:border-sky-200 rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.98] group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 group-hover:text-sky-700">Payout Ratio</span>
+                      </div>
+                      <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
+                        {metrics.payoutRatio.toFixed(1)}%
+                      </div>
+                    </div>
+                  )}
+
+                  {metrics?.fiveYearAvgDividendYield != null && (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedMetricId('fiveYearAvgDividendYield')}
+                      className="bg-slate-50/90 hover:bg-sky-50/50 border border-slate-100 hover:border-sky-200 rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.98] group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 group-hover:text-sky-700">Yield Méd. 5 Anos</span>
+                      </div>
+                      <div className="text-base font-black text-slate-900 mt-1 tabular-nums">
+                        {metrics.fiveYearAvgDividendYield.toFixed(2)}%
+                      </div>
+                    </div>
+                  )}
+
                   {metrics?.exDividendDate != null && (
-                    <div className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3">
-                      <div className="text-[11px] font-bold text-slate-400">
-                        <span>Data Ex-Dividendo</span>
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedMetricId('exDividendDate')}
+                      className="bg-slate-50/90 hover:bg-sky-50/50 border border-slate-100 hover:border-sky-200 rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.98] group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 group-hover:text-sky-700">Data Ex-Dividendo</span>
                       </div>
                       <div className="text-xs font-black text-slate-800 mt-1.5 truncate">
                         {metrics.exDividendDate}
@@ -1303,9 +2291,14 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
                   )}
 
                   {metrics?.earningsDate != null && (
-                    <div className="bg-slate-50/90 border border-slate-100 rounded-2xl p-3">
-                      <div className="text-[11px] font-bold text-slate-400">
-                        <span>Próx. Resultados</span>
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedMetricId('earningsDate')}
+                      className="bg-slate-50/90 hover:bg-sky-50/50 border border-slate-100 hover:border-sky-200 rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.98] group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 group-hover:text-sky-700">Próx. Resultados</span>
                       </div>
                       <div className="text-xs font-black text-sky-700 mt-1.5 truncate">
                         {metrics.earningsDate}
@@ -1317,6 +2310,118 @@ export const StockChartModal: React.FC<StockChartModalProps> = ({
             )}
           </div>
         </div>
+
+        {/* Modal Informativo / Bottom Sheet ao Clicar numa Métrica */}
+        <AnimatePresence>
+          {selectedMetricId && METRIC_EXPLANATIONS[selectedMetricId] && (
+            <div
+              className="fixed inset-0 z-[120] flex items-end sm:items-center justify-center p-0 sm:p-4 bg-slate-900/50 backdrop-blur-xs"
+              onClick={() => setSelectedMetricId(null)}
+            >
+              <motion.div
+                initial={{ opacity: 0, y: 50, scale: 0.95 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 50, scale: 0.95 }}
+                transition={{ type: 'spring', damping: 26, stiffness: 320 }}
+                className="w-full sm:max-w-md bg-white rounded-t-3xl sm:rounded-3xl shadow-2xl border border-slate-100 flex flex-col max-h-[85vh] overflow-hidden"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {/* Cabeçalho Fixo */}
+                <div className="p-5 sm:p-6 pb-3.5 border-b border-slate-100 flex items-start justify-between shrink-0 bg-white">
+                  <div className="flex flex-col gap-1 pr-3">
+                    <span className="text-[10px] font-black text-sky-600 uppercase tracking-wider bg-sky-50 px-2.5 py-0.5 rounded-full w-fit">
+                      {METRIC_EXPLANATIONS[selectedMetricId].category}
+                    </span>
+                    <h3 className="text-lg font-black text-slate-900 leading-snug">
+                      {METRIC_EXPLANATIONS[selectedMetricId].title}
+                    </h3>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedMetricId(null)}
+                    className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-full transition-colors shrink-0 -mr-1 -mt-1"
+                    aria-label="Fechar"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                {/* Conteúdo com Scroll Independente */}
+                <div className="p-5 sm:p-6 overflow-y-auto flex flex-col gap-3.5 text-sm overscroll-contain">
+                  <div className="bg-slate-50 border border-slate-100 rounded-2xl p-3.5">
+                    <span className="text-[11px] font-black text-slate-400 uppercase tracking-wider block mb-1">
+                      O que significa
+                    </span>
+                    <p className="text-slate-700 font-medium leading-relaxed">
+                      {METRIC_EXPLANATIONS[selectedMetricId].definition}
+                    </p>
+                  </div>
+
+                  {customComparison ? (
+                    <>
+                      <div className="bg-emerald-50/80 border border-emerald-200/90 rounded-2xl p-3.5 shadow-xs">
+                        <div className="flex items-center justify-between mb-1.5">
+                          <span className="text-[11px] font-black text-emerald-800 uppercase tracking-wider">
+                            No teu caso ({position.ticker})
+                          </span>
+                          <span className="text-[10px] font-black text-emerald-700 bg-emerald-100/80 px-2 py-0.5 rounded-full">
+                            Dados Reais
+                          </span>
+                        </div>
+                        <p className="text-emerald-950 font-semibold leading-relaxed">
+                          {customComparison.userContext}
+                        </p>
+                      </div>
+
+                      <div className="bg-amber-50/80 border border-amber-200/90 rounded-2xl p-3.5 shadow-xs">
+                        <div className="flex items-center justify-between mb-1.5">
+                          <span className="text-[11px] font-black text-amber-800 uppercase tracking-wider">
+                            Cenário Oposto (Para Comparar)
+                          </span>
+                          <span className="text-[10px] font-black text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full">
+                            Contraste
+                          </span>
+                        </div>
+                        <p className="text-amber-950 font-medium leading-relaxed">
+                          {customComparison.oppositeExample}
+                        </p>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="bg-amber-50/70 border border-amber-100 rounded-2xl p-3.5">
+                      <span className="text-[11px] font-black text-amber-700 uppercase tracking-wider block mb-1">
+                        Exemplo Prático Teórico
+                      </span>
+                      <p className="text-amber-950 font-medium leading-relaxed">
+                        {METRIC_EXPLANATIONS[selectedMetricId].example}
+                      </p>
+                    </div>
+                  )}
+
+                  <div className="bg-sky-50/70 border border-sky-100 rounded-2xl p-3.5">
+                    <span className="text-[11px] font-black text-sky-700 uppercase tracking-wider block mb-1">
+                      Como Interpretar
+                    </span>
+                    <p className="text-sky-950 font-medium leading-relaxed">
+                      {METRIC_EXPLANATIONS[selectedMetricId].interpretation}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Rodapé Fixo com Ação */}
+                <div className="p-4 sm:p-5 pt-3 border-t border-slate-100 shrink-0 bg-slate-50/60">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedMetricId(null)}
+                    className="w-full py-3 bg-slate-900 hover:bg-slate-800 text-white rounded-2xl font-bold text-sm transition-colors"
+                  >
+                    Entendido
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
       </motion.div>
     </AnimatePresence>
   );

@@ -1,6 +1,6 @@
 {
   "name": "OurTracker",
-  "description": "Portfólio de investimentos e alocação de ativos com sincronização em tempo real.",
+  "description": "Gestão de portfólio de investimentos com analista AI integrado e calculadora de aportes inteligente.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

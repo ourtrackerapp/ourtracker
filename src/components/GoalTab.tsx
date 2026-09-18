@@ -47,7 +47,7 @@ export const GoalTab: React.FC<GoalTabProps> = ({ totalValue, positions }) => {
 
     const interval = setInterval(() => {
       loadMeta();
-    }, 3000);
+    }, 5000);
 
     return () => {
       active = false;
@@ -130,7 +130,6 @@ export const GoalTab: React.FC<GoalTabProps> = ({ totalValue, positions }) => {
   // Generate dynamic chart data based on real deposits from settings and portfolio totalValue
   const chartData = useMemo(() => {
     const today = new Date();
-    const currentYear = today.getFullYear();
     const points = [];
 
     // Parse real deposits from settings
@@ -148,71 +147,123 @@ export const GoalTab: React.FC<GoalTabProps> = ({ totalValue, positions }) => {
       }
     });
 
-    // Determine the start date from deposits or positions first purchase timestamp
-    let firstDate: Date | null = null;
+    // Determine the first deposit date (or fallback)
+    let firstDepositDate: Date | null = null;
     parsedDeposits.forEach(pd => {
-      if (!firstDate || pd.dateObj < firstDate) {
-        firstDate = pd.dateObj;
+      if (!firstDepositDate || pd.dateObj < firstDepositDate) {
+        firstDepositDate = pd.dateObj;
       }
     });
 
-    positions.forEach(p => {
-      if (p.firstPurchaseTimestamp) {
-        const dateObj = new Date(p.firstPurchaseTimestamp);
-        if (!isNaN(dateObj.getTime())) {
-          if (!firstDate || dateObj < firstDate) {
-            firstDate = dateObj;
+    if (!firstDepositDate) {
+      positions.forEach(p => {
+        if (p.firstPurchaseTimestamp) {
+          const dObj = new Date(p.firstPurchaseTimestamp);
+          if (!isNaN(dObj.getTime())) {
+            if (!firstDepositDate || dObj < firstDepositDate) {
+              firstDepositDate = dObj;
+            }
           }
         }
-      }
-    });
-
-    if (!firstDate) {
-      firstDate = new Date(currentYear, 0, 1);
+      });
     }
 
-    const startYear = firstDate.getFullYear();
-    const startMonth = firstDate.getMonth();
-    const endYear = Math.max(currentYear, today.getFullYear());
-    const endMonth = 11; // December
+    if (!firstDepositDate) {
+      firstDepositDate = new Date();
+    }
 
-    const totalMonths = Math.max(1, (endYear - startYear) * 12 + (endMonth - startMonth) + 1);
-    const todayIndex = (today.getFullYear() - startYear) * 12 + (today.getMonth() - startMonth);
+    // Chart starts exactly two months before the first deposit
+    const chartStartDate = new Date(firstDepositDate.getTime());
+    chartStartDate.setMonth(chartStartDate.getMonth() - 2);
 
+    // The timeline duration is 1 year (365 days), sampled every 5 days
+    const totalDays = 365;
+    const stepDays = 5;
+
+    // Growth multiplier for portfolio value
     const totalActualDeposits = parsedDeposits.reduce((sum, pd) => sum + pd.amount, 0);
     const growthMultiplier = totalActualDeposits > 0 && totalValue > 0 ? (totalValue / totalActualDeposits) : 1;
 
     const annualRate = expectedReturn > 0 ? expectedReturn / 100 : 0.08;
-    const monthlyRate = annualRate / 12;
-
-    let runningGoalValue = 0;
-    let runningCumulativeDeposit = 0;
     const activeMonthlyContrib = monthlyContribution > 0 ? monthlyContribution : 300;
 
-    for (let i = 0; i < totalMonths; i++) {
-      const d = new Date(startYear, startMonth + i, 1);
-      const mYear = d.getFullYear();
-      const mMonth = d.getMonth();
+    // Temporary array to hold points before finding the closest point to today
+    const rawPoints: { rawDate: Date; monthDeposit: number; cumulativeDeposit: number }[] = [];
 
-      const monthDeps = parsedDeposits.filter(pd => pd.year === mYear && pd.month === mMonth);
-      const monthDepositSum = monthDeps.reduce((sum, pd) => sum + pd.amount, 0);
+    for (let dayOffset = 0; dayOffset <= totalDays; dayOffset += stepDays) {
+      const d = new Date(chartStartDate.getTime() + dayOffset * 24 * 60 * 60 * 1000);
 
-      runningCumulativeDeposit += monthDepositSum;
+      // Sum deposits that occurred in the 5 days leading up to d (or exactly on d if dayOffset is 0)
+      const rangeStart = dayOffset === 0 ? d : new Date(d.getTime() - 5 * 24 * 60 * 60 * 1000);
+      const intervalDeps = parsedDeposits.filter(pd => {
+        if (dayOffset === 0) {
+          return pd.dateObj.toDateString() === d.toDateString();
+        }
+        return pd.dateObj > rangeStart && pd.dateObj <= d;
+      });
+      const intervalDepositSum = intervalDeps.reduce((sum, pd) => sum + pd.amount, 0);
 
-      // Compounding goal value with expected annual return rate per month
-      runningGoalValue = (runningGoalValue + activeMonthlyContrib) * (1 + monthlyRate);
-      const gVal = runningGoalValue;
+      // Cumulative deposits up to d
+      const cumulativeDepositSum = parsedDeposits.filter(pd => pd.dateObj <= d).reduce((sum, pd) => sum + pd.amount, 0);
 
-      const isPast = i <= todayIndex;
-      const isToday = i === todayIndex;
+      rawPoints.push({
+        rawDate: d,
+        monthDeposit: intervalDepositSum,
+        cumulativeDeposit: cumulativeDepositSum
+      });
+    }
+
+    // Find the generated point closest to today
+    let closestIdx = 0;
+    let minDiff = Infinity;
+    for (let i = 0; i < rawPoints.length; i++) {
+      const diff = Math.abs(rawPoints[i].rawDate.getTime() - today.getTime());
+      if (diff < minDiff) {
+        minDiff = diff;
+        closestIdx = i;
+      }
+    }
+
+    // Build final points list with compound goalValue starting at firstDepositDate
+    for (let i = 0; i < rawPoints.length; i++) {
+      const rp = rawPoints[i];
+      const d = rp.rawDate;
+
+      // Goal starts exactly at firstDepositDate
+      let gVal = 0;
+      if (d >= firstDepositDate) {
+        // Compound interest calculation for monthly recurring deposits starting at firstDepositDate
+        // anniversaries occur at: firstDepositDate + j months
+        let compGoal = 0;
+        let j = 0;
+        while (true) {
+          const annivDate = new Date(firstDepositDate.getFullYear(), firstDepositDate.getMonth() + j, firstDepositDate.getDate());
+          if (annivDate > d) {
+            break;
+          }
+          const daysSinceAnniv = (d.getTime() - annivDate.getTime()) / (1000 * 60 * 60 * 24);
+          compGoal += activeMonthlyContrib * Math.pow(1 + annualRate, daysSinceAnniv / 365.25);
+          j++;
+        }
+        gVal = compGoal;
+      }
+
+      // Determine isPast relative to closestIdx
+      const isPast = i <= closestIdx;
+      const isToday = i === closestIdx;
 
       let pVal = 0;
-      if (i <= todayIndex) {
-        const baseDep = runningCumulativeDeposit > 0 ? runningCumulativeDeposit : (i + 1) * (totalValue / Math.max(1, todayIndex + 1));
-        pVal = baseDep * (totalValue > 0 && totalActualDeposits > 0 ? growthMultiplier : 1);
-        if (isToday) pVal = totalValue; // exact current wallet value
-      } else {
-        pVal = 0;
+      if (isPast) {
+        if (rp.cumulativeDeposit > 0) {
+          pVal = rp.cumulativeDeposit * growthMultiplier;
+        } else {
+          // If no deposits, linearly interpolate up to totalValue
+          const fraction = i / Math.max(1, closestIdx);
+          pVal = fraction * totalValue;
+        }
+        if (isToday) {
+          pVal = totalValue; // Ensure exact current value at today's node
+        }
       }
 
       const MONTH_NAMES = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
@@ -224,15 +275,16 @@ export const GoalTab: React.FC<GoalTabProps> = ({ totalValue, positions }) => {
         year: d.getFullYear(),
         portfolioValue: pVal,
         goalValue: gVal,
-        monthDeposit: monthDepositSum, // Individual deposit for this specific month
-        cumulativeDeposit: runningCumulativeDeposit,
+        monthDeposit: rp.monthDeposit,
+        cumulativeDeposit: rp.cumulativeDeposit,
         label: labelText,
+        rawDate: d,
         isPast: isPast
       });
     }
 
     return points;
-  }, [deposits, positions, totalValue, monthlyContribution]);
+  }, [deposits, positions, totalValue, monthlyContribution, expectedReturn]);
 
   const currentYearGoal = useMemo(() => {
     const currentPoint = chartData.find(p => p.label.includes('Atual'));

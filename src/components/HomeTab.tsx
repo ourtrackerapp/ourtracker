@@ -6,6 +6,7 @@ import {
   HomeChartPoint,
   fetchHomeChartData,
   fetchAllTimeTwrBaseline,
+  calculateTopCardMetrics,
   formatCurrencyEur,
   formatPercentString,
   formatEuroChange,
@@ -100,12 +101,19 @@ interface Props {
   holdings: HoldingDoc[];
   totalValue: number;
   positions: PortfolioPosition[];
+  selectedPeriod: PeriodOption;
+  onPeriodChange: (period: PeriodOption) => void;
 }
 
 const PERIODS: PeriodOption[] = ['1D', '1S', '1M', '3M', 'YTD', 'Tudo'];
 
-export const HomeTab: React.FC<Props> = ({ holdings, totalValue, positions }) => {
-  const [selectedPeriod, setSelectedPeriod] = useState<PeriodOption>('1D');
+export const HomeTab: React.FC<Props> = ({
+  holdings,
+  totalValue,
+  positions,
+  selectedPeriod,
+  onPeriodChange,
+}) => {
   const [showSp500, setShowSp500] = useState<boolean>(false);
 
   const [chartData, setChartData] = useState<HomeChartData | null>(null);
@@ -172,7 +180,7 @@ export const HomeTab: React.FC<Props> = ({ holdings, totalValue, positions }) =>
       }
     }
     loadDeposited();
-    const interval = setInterval(loadDeposited, 3000);
+    const interval = setInterval(loadDeposited, 5000);
     return () => {
       active = false;
       clearInterval(interval);
@@ -219,8 +227,12 @@ export const HomeTab: React.FC<Props> = ({ holdings, totalValue, positions }) =>
 
     loadData();
 
+    // Refresh home chart every 1 minute (60,000 ms)
+    const interval = setInterval(loadData, 60000);
+
     return () => {
       isCancelled = true;
+      clearInterval(interval);
     };
   }, [holdings, selectedPeriod, showSp500]);
 
@@ -247,63 +259,13 @@ export const HomeTab: React.FC<Props> = ({ holdings, totalValue, positions }) =>
     return positions.reduce((acc, p) => acc + (p.isError ? 0 : (p.totalInvested || 0)), 0);
   }, [positions]);
 
-  const totalProfit = totalValue - totalInvested;
-  
-  // Ajuste deduzido exclusivamente ao valor total do património (-1.74€)
-  const UNRECORDED_ADJUSTMENT = 1.74;
-  const topCardProfit = totalProfit;
-  
-  // Total Equity = Stocks + Cash (where Cash = totalDeposited - totalInvested)
-  const cash = Math.max(0, totalDeposited - totalInvested);
-  const totalEquity = totalValue + cash;
-  const displayTotalEquity = Math.max(0, totalEquity - UNRECORDED_ADJUSTMENT);
-
-  const parseDepositTimestamp = (dateInput: any): number => {
-    if (!dateInput) return 0;
-    if (typeof dateInput === 'number') return dateInput;
-    if (dateInput instanceof Date) return dateInput.getTime();
-    if (typeof dateInput === 'string') {
-      if (/^\d{2}\/\d{2}\/\d{4}$/.test(dateInput)) {
-        const [day, month, year] = dateInput.split('/');
-        const parsed = new Date(`${year}-${month}-${day}T00:00:00.000Z`);
-        if (!isNaN(parsed.getTime())) return parsed.getTime();
-      }
-      const parsed = new Date(dateInput);
-      if (!isNaN(parsed.getTime())) return parsed.getTime();
-    }
-    if (dateInput && typeof dateInput === 'object') {
-      if (typeof dateInput.toMillis === 'function') return dateInput.toMillis();
-      if (typeof dateInput.toDate === 'function') return dateInput.toDate().getTime();
-      if (typeof dateInput.seconds === 'number') return dateInput.seconds * 1000;
-    }
-    return 0;
-  };
-
-  // Cálculo da percentagem TWR real atualizada ao segundo para o cartão de resumo superior
-  const topCardTwrPercent = useMemo(() => {
-    if (!allTimeTwrBaseline || allTimeTwrBaseline.baseCapital <= 0) {
-      if (totalInvested > 0) {
-        return (topCardProfit / totalInvested) * 100;
-      }
-      return totalDeposited > 0 ? (topCardProfit / totalDeposited) * 100 : 0;
-    }
-
-    const { baseIndex, baseCapital, lastTimestamp } = allTimeTwrBaseline;
-
-    let recentDeposits = 0;
-    depositsList.forEach((d: any) => {
-      const depTime = parseDepositTimestamp(d.date);
-      if (depTime > lastTimestamp) {
-        recentDeposits += Number(d.amount) || 0;
-      }
+  // Cálculo dos valores do cartão superior através de função independente
+  const { displayTotalEquity, topCardProfit, topCardTwrPercent } = useMemo(() => {
+    return calculateTopCardMetrics({
+      totalValue,
+      totalInvested,
     });
-
-    const adjustedEquity = totalEquity - UNRECORDED_ADJUSTMENT;
-    const subReturn = (adjustedEquity - recentDeposits - baseCapital) / baseCapital;
-    const currentTwrIndex = baseIndex * (1 + subReturn);
-    const twr = (currentTwrIndex - 1) * 100;
-    return isNaN(twr) ? 0 : twr;
-  }, [allTimeTwrBaseline, totalEquity, topCardProfit, totalInvested, totalDeposited, depositsList]);
+  }, [totalValue, totalInvested]);
 
   const toggleDisplayUnit = () => {
     setDisplayUnit((prev) => (prev === 'eur' ? 'percent' : 'eur'));
@@ -345,20 +307,6 @@ export const HomeTab: React.FC<Props> = ({ holdings, totalValue, positions }) =>
     <div className="w-full h-full flex flex-col justify-start bg-white text-slate-900 px-4 pt-2 pb-2 select-none max-w-md mx-auto overflow-y-auto">
       {/* TOP SUMMARY - SEM BALÃO DE FUNDO, APENAS TOTAL E LUCRO CENTRADOS COM ROLETA 120Hz */}
       <div className="relative w-full pt-1 pb-3 mb-1 flex flex-col items-center justify-center text-center">
-        {/* API status indicator discretely positioned in top right */}
-        <div className="absolute top-1 right-1 flex items-center">
-          <span
-            className={`w-2 h-2 rounded-full inline-block transition-all duration-300 ${
-              isApiFresh
-                ? pulseSync
-                  ? 'bg-emerald-400 scale-125 shadow-[0_0_10px_rgba(16,185,129,0.9)] ring-2 ring-emerald-300/40'
-                  : 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.5)]'
-                : 'bg-rose-500 animate-pulse shadow-[0_0_8px_rgba(244,63,94,0.6)]'
-            }`}
-            title={isApiFresh ? 'Atualização ativa a cada 3s (Tempo Real)' : 'A usar valores em cache / Falha na API'}
-          />
-        </div>
-
         {/* Centered Main Equity Value com efeito roleta 120Hz e desfocagem */}
         <div className="text-3xl font-black text-slate-900 tracking-tight leading-none mb-1.5 flex items-center justify-center">
           <RouletteText text={formatCurrencyEur(displayTotalEquity)} />
@@ -386,10 +334,20 @@ export const HomeTab: React.FC<Props> = ({ holdings, totalValue, positions }) =>
 
       {/* 1. TOP HEADER (CHART INTERACTIVE HEADER) */}
       {!showSp500 ? (
-        <div className="w-full flex items-center justify-end min-h-[30px] mb-2">
+        <div className="w-full flex items-end justify-between min-h-[46px] mb-3 px-1">
+          <div className="flex flex-col">
+            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5">
+              {activePoint?.formattedDate || 'Performance'}
+            </span>
+            <span className="text-lg font-bold text-slate-400 tabular-nums leading-none">
+              {activePoint?.portfolio
+                ? formatCurrencyEur(activePoint.portfolio.capitalValue)
+                : '€0,00'}
+            </span>
+          </div>
           <div className="flex flex-col items-end text-right">
             <span
-              className={`text-lg font-semibold tracking-tight ${getReturnColorClass(
+              className={`text-lg font-semibold tracking-tight leading-none mb-1.5 ${getReturnColorClass(
                 activePoint?.portfolio?.returnPercent
               )}`}
             >
@@ -398,7 +356,7 @@ export const HomeTab: React.FC<Props> = ({ holdings, totalValue, positions }) =>
                 : '0,00%'}
             </span>
             <span
-              className={`text-sm font-medium ${getReturnColorClass(
+              className={`text-sm font-medium leading-none ${getReturnColorClass(
                 activePoint?.portfolio?.euroChange
               )}`}
             >
@@ -409,77 +367,65 @@ export const HomeTab: React.FC<Props> = ({ holdings, totalValue, positions }) =>
           </div>
         </div>
       ) : (
-        <div className="w-full grid grid-cols-2 gap-2 min-h-[50px] mb-4">
-          {/* Portfolio Card */}
-          <div className="flex flex-col justify-center bg-blue-50/40 border border-blue-100/50 rounded-2xl p-3">
-            <div className="flex items-center gap-1.5 mb-1.5">
-              <span className="w-2 h-2 rounded-full bg-blue-500" />
-              <span className="text-[10px] font-bold text-blue-700 uppercase tracking-wider">Portfólio</span>
-            </div>
-            <span className="text-xl font-bold tracking-tight text-slate-900 leading-none mb-1">
-              {activePoint && activePoint.portfolio
-                ? formatCurrencyEur(activePoint.portfolio.capitalValue)
-                : formatCurrencyEur(totalValue)}
+        <div className="w-full flex flex-col mb-4">
+          <div className="flex items-center justify-between mb-2 px-1">
+            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+              {activePoint?.formattedDate || 'Comparações'}
             </span>
-            <div className="flex items-center gap-1.5">
-              <span
-                className={`text-xs font-bold ${getReturnColorClass(
-                  activePoint?.portfolio?.returnPercent
-                )}`}
-              >
-                {activePoint && activePoint.portfolio
-                  ? formatPercentString(activePoint.portfolio.returnPercent)
-                  : '0,00%'}
-              </span>
-              <span
-                className={`text-[10px] font-medium ${getReturnColorClass(
-                  activePoint?.portfolio?.euroChange
-                )}`}
-              >
-                {activePoint && activePoint.portfolio
-                  ? formatEuroChange(activePoint.portfolio.euroChange)
-                  : '€0'}
-              </span>
-            </div>
           </div>
-
-          {/* S&P 500 Card */}
-          <div className="flex flex-col justify-center bg-yellow-50/40 border border-yellow-100/50 rounded-2xl p-3 relative">
-            <button 
-              type="button"
-              onClick={() => setShowSp500(false)}
-              className="absolute top-2 right-2 w-6 h-6 flex items-center justify-center rounded-full hover:bg-yellow-100/80 text-yellow-700 transition-colors"
-            >
-              ×
-            </button>
-            <div className="flex items-center gap-1.5 mb-1.5">
-              <span className="w-2 h-2 rounded-full bg-yellow-500" />
-              <span className="text-[10px] font-bold text-yellow-700 uppercase tracking-wider">S&P 500</span>
+          <div className="w-full grid grid-cols-2 gap-2 min-h-[50px]">
+            <div className="flex flex-col justify-center bg-blue-50/40 border border-blue-100/50 rounded-2xl p-3">
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <span className="w-2 h-2 rounded-full bg-blue-500" />
+                <span className="text-[10px] font-bold text-blue-700 uppercase tracking-wider">Portfólio</span>
+              </div>
+              <span className="text-xl font-bold tracking-tight text-slate-900 leading-none mb-1">
+                {activePoint && activePoint.portfolio
+                  ? formatCurrencyEur(activePoint.portfolio.capitalValue)
+                  : formatCurrencyEur(totalValue)}
+              </span>
+              <div className="flex items-center gap-1.5">
+                <span className={`text-xs font-bold ${getReturnColorClass(activePoint?.portfolio?.returnPercent)}`}>
+                  {activePoint && activePoint.portfolio
+                    ? formatPercentString(activePoint.portfolio.returnPercent)
+                    : '0,00%'}
+                </span>
+                <span className={`text-[10px] font-medium ${getReturnColorClass(activePoint?.portfolio?.euroChange)}`}>
+                  {activePoint && activePoint.portfolio
+                    ? formatEuroChange(activePoint.portfolio.euroChange)
+                    : '€0'}
+                </span>
+              </div>
             </div>
-            <span className="text-xl font-bold tracking-tight text-slate-900 leading-none mb-1">
-              {activePoint?.sp500
-                ? formatCurrencyEur(activePoint.sp500.capitalValue)
-                : '€0,00'}
-            </span>
-            <div className="flex items-center gap-1.5">
-              <span
-                className={`text-xs font-bold ${getReturnColorClass(
-                  activePoint?.sp500?.returnPercent
-                )}`}
+            <div className="flex flex-col justify-center bg-yellow-50/40 border border-yellow-100/50 rounded-2xl p-3 relative">
+              <button 
+                type="button"
+                onClick={() => setShowSp500(false)}
+                className="absolute top-2 right-2 w-6 h-6 flex items-center justify-center rounded-full hover:bg-yellow-100/80 text-yellow-700 transition-colors"
               >
+                ×
+              </button>
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <span className="w-2 h-2 rounded-full bg-yellow-500" />
+                <span className="text-[10px] font-bold text-yellow-700 uppercase tracking-wider">SPY</span>
+              </div>
+              <span className="text-xl font-bold tracking-tight text-slate-900 leading-none mb-1">
                 {activePoint?.sp500
-                  ? formatPercentString(activePoint.sp500.returnPercent)
-                  : '0,00%'}
+                  ? formatCurrencyEur(activePoint.sp500.capitalValue)
+                  : '€0,00'}
               </span>
-              <span
-                className={`text-[10px] font-medium ${getReturnColorClass(
-                  activePoint?.sp500?.euroChange
-                )}`}
-              >
-                {activePoint?.sp500
-                  ? formatEuroChange(activePoint.sp500.euroChange)
-                  : '€0'}
-              </span>
+              <div className="flex items-center gap-1.5">
+                <span className={`text-xs font-bold ${getReturnColorClass(activePoint?.sp500?.returnPercent)}`}>
+                  {activePoint?.sp500
+                    ? formatPercentString(activePoint.sp500.returnPercent)
+                    : '0,00%'}
+                </span>
+                <span className={`text-[10px] font-medium ${getReturnColorClass(activePoint?.sp500?.euroChange)}`}>
+                  {activePoint?.sp500
+                    ? formatEuroChange(activePoint.sp500.euroChange)
+                    : '€0'}
+                </span>
+              </div>
             </div>
           </div>
         </div>
@@ -516,7 +462,7 @@ export const HomeTab: React.FC<Props> = ({ holdings, totalValue, positions }) =>
               key={period}
               type="button"
               onClick={() => {
-                setSelectedPeriod(period);
+                onPeriodChange(period);
                 setHoveredPoint(null);
               }}
               className={`flex-1 py-1 px-1.5 text-[11px] font-bold rounded-full transition-all cursor-pointer text-center focus:outline-none ${

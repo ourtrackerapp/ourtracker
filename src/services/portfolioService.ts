@@ -11,6 +11,7 @@ import {
   Unsubscribe,
 } from 'firebase/firestore';
 import { db } from '../firebase';
+import { formatDateDDMMYYYY } from '../utils/dateUtils';
 import { HoldingDoc, PortfolioPosition, PurchaseRecord } from '../types';
 import { convertTickerToYahoo } from '../utils/yahooClient';
 
@@ -58,32 +59,49 @@ const clientQuotesCache = new Map<string, { data: any; timestamp: number }>();
 const fxCache = new Map<string, number>();
 
 /**
- * Gets historical FX rate from Frankfurter API
+ * Gets historical FX rate from our server API (Frankfurter ECB + fallbacks)
  */
 export async function getHistoricalFxRate(date: number | string, from: string = 'USD', to: string = 'EUR'): Promise<number> {
-  if (from === to) return 1.0;
+  const cleanFrom = from.trim().toUpperCase();
+  const cleanTo = to.trim().toUpperCase();
+  if (cleanFrom === cleanTo) return 1.0;
   
-  const dateObj = new Date(date);
-  const dateStr = dateObj.toISOString().split('T')[0];
-  const cacheKey = `${dateStr}_${from}_${to}`;
+  let dateStr = new Date().toISOString().split('T')[0];
+  try {
+    const dateObj = new Date(date);
+    if (!isNaN(dateObj.getTime())) {
+      dateStr = dateObj.toISOString().split('T')[0];
+    }
+  } catch (_) {}
 
+  const cacheKey = `${dateStr}_${cleanFrom}_${cleanTo}`;
   if (fxCache.has(cacheKey)) return fxCache.get(cacheKey)!;
 
   try {
-    const res = await fetch(`https://api.frankfurter.app/${dateStr}?from=${from}&to=${to}`);
-    if (!res.ok) throw new Error(`Frankfurter API error: ${res.status}`);
-    const data = await res.json();
-    if (data && data.rates && data.rates[to]) {
-      const rate = data.rates[to];
-      fxCache.set(cacheKey, rate);
-      return rate;
+    const res = await fetch(`/api/fx/historical?date=${encodeURIComponent(dateStr)}&from=${encodeURIComponent(cleanFrom)}&to=${encodeURIComponent(cleanTo)}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (typeof data?.rate === 'number' && data.rate > 0) {
+        fxCache.set(cacheKey, data.rate);
+        return data.rate;
+      }
     }
   } catch (err) {
-    console.warn(`Erro ao obter taxa FX para ${dateStr}:`, err);
+    console.warn(`Erro ao obter taxa FX histórica para ${dateStr}:`, err);
   }
 
-  // Fallback to a standard rate if API fails
-  return from === 'USD' && to === 'EUR' ? 0.92 : 1.0;
+  // Fallback para taxa spot ao vivo do servidor se a data histórica falhar
+  try {
+    const spotRes = await fetch(`/api/fx/${encodeURIComponent(cleanFrom)}`);
+    if (spotRes.ok) {
+      const spotData = await spotRes.json();
+      if (typeof spotData?.rate === 'number' && spotData.rate > 0) {
+        return spotData.rate;
+      }
+    }
+  } catch (_) {}
+
+  return 1.0;
 }
 
 // Guarda a última cotação válida com sucesso para nunca perder dados em caso de erro temporário
@@ -200,6 +218,64 @@ export async function fetchLiveQuotes(
   }
 }
 
+export const VERIFIED_PURCHASE_OVERWRITES: Record<string, { priceEur: number; totalCostEur: number }> = {
+  'p-1789736116849-0': { priceEur: 123.50, totalCostEur: 26.96 },
+  'p-1789736138319-1': { priceEur: 123.3425, totalCostEur: 35.72 },
+  'p-1789736061271-0': { priceEur: 119.1846, totalCostEur: 9.94 },
+  'p-1789736085738-1': { priceEur: 140.3508, totalCostEur: 34.40 },
+  'p-1789735943124-0': { priceEur: 128.98, totalCostEur: 13.53 },
+  'p-1789735967003-1': { priceEur: 127.4539, totalCostEur: 25.58 },
+  'p-1789735855124-0': { priceEur: 291.5888, totalCostEur: 21.84 },
+  'p-1789735892129-1': { priceEur: 299.1182, totalCostEur: 16.96 },
+  'p-1789735770092-0': { priceEur: 29.0481, totalCostEur: 11.23 },
+  'p-1789735797518-1': { priceEur: 33.0179, totalCostEur: 25.82 },
+  'p-1789735690522-0': { priceEur: 227.8956, totalCostEur: 13.97 },
+  'p-1789735730800-1': { priceEur: 221.0956, totalCostEur: 18.97 },
+  'p-1789735453255-0': { priceEur: 162.1622, totalCostEur: 3.60 },
+  'p-1789735544570-1': { priceEur: 162.9730, totalCostEur: 12.06 },
+  'p-1789735571933-2': { priceEur: 146.0298, totalCostEur: 24.46 },
+  'p-1789735590833-3': { priceEur: 125.0871, totalCostEur: 3.59 },
+  'p-1789736254536-0': { priceEur: 696.34, totalCostEur: 194.98 },
+  'p-1789736278851-1': { priceEur: 713.82, totalCostEur: 193.09 },
+  'p-1789736176981-0': { priceEur: 89.83, totalCostEur: 40.00 },
+  'p-1789736199598-1': { priceEur: 89.51, totalCostEur: 24.50 },
+  'p-1789736215734-2': { priceEur: 89.24, totalCostEur: 29.99 },
+};
+
+export function sanitizePurchaseRecord(p: any): PurchaseRecord {
+  if (!p) return p;
+  const copy = { ...p };
+
+  // 1. Se for uma das compras verificadas pelo extrato do broker
+  if (copy.id && VERIFIED_PURCHASE_OVERWRITES[copy.id]) {
+    copy.priceEur = VERIFIED_PURCHASE_OVERWRITES[copy.id].priceEur;
+    copy.totalCostEur = VERIFIED_PURCHASE_OVERWRITES[copy.id].totalCostEur;
+    return copy;
+  }
+
+  // 2. Se for moeda estrangeira e ainda tiver o rácio legado residual de 0.92
+  const rawPrice = Number(copy.price || 0);
+  const rawPriceEur = Number(copy.priceEur || 0);
+  const isForeign = copy.currency && copy.currency !== 'EUR';
+  if (isForeign && rawPrice > 0 && rawPriceEur > 0) {
+    const ratio = rawPriceEur / rawPrice;
+    if (Math.abs(ratio - 0.92) <= 0.005) {
+      const correctedEurPrice = rawPrice * 0.868;
+      copy.priceEur = Number(correctedEurPrice.toFixed(4));
+      if (copy.shares && copy.shares > 0) {
+        copy.totalCostEur = Number((copy.shares * correctedEurPrice).toFixed(2));
+      }
+    }
+  }
+
+  return copy;
+}
+
+export function cleanForFirestore<T>(data: T): T {
+  if (data === undefined) return null as any;
+  return JSON.parse(JSON.stringify(data));
+}
+
 // Subscrição em direto no Firestore (sem localStorage)
 export function subscribeUserHoldings(
   portfolioId: string = 'main',
@@ -214,9 +290,12 @@ export function subscribeUserHoldings(
     .then((res) => res.json())
     .then((syncRes) => {
       if (syncRes?.success && syncRes?.data?.holdings && Array.isArray(syncRes.data.holdings)) {
-        // Se o firestore ainda estiver a conectar ou vazio e houver sync recente
         if (syncRes.data.holdings.length > 0) {
-          onUpdate(syncRes.data.holdings);
+          const sanitized = syncRes.data.holdings.map((h: any) => ({
+            ...h,
+            purchases: Array.isArray(h.purchases) ? h.purchases.map(sanitizePurchaseRecord) : undefined
+          }));
+          onUpdate(sanitized);
         }
       }
     })
@@ -228,24 +307,46 @@ export function subscribeUserHoldings(
       const holdings: HoldingDoc[] = [];
       snapshot.forEach((docSnap) => {
         const data = docSnap.data();
+        let docNeedsHealing = false;
+
+        const sanitizedPurchases = Array.isArray(data.purchases)
+          ? data.purchases.map((rawP: any) => {
+              const cleaned = sanitizePurchaseRecord(rawP);
+              if (cleaned.totalCostEur !== rawP.totalCostEur || cleaned.priceEur !== rawP.priceEur) {
+                docNeedsHealing = true;
+              }
+              return {
+                id: cleaned.id,
+                date: typeof cleaned.date === 'string' ? new Date(cleaned.date).getTime() : Number(cleaned.date || data.createdAt || Date.now()),
+                shares: Number(cleaned.shares || 0),
+                price: cleaned.price !== undefined ? Number(cleaned.price) : undefined,
+                priceEur: cleaned.priceEur !== undefined ? Number(cleaned.priceEur) : undefined,
+                currency: cleaned.currency,
+                totalCostEur: cleaned.totalCostEur !== undefined ? Number(cleaned.totalCostEur) : undefined,
+                feeEur: cleaned.feeEur !== undefined ? Number(cleaned.feeEur) : undefined,
+              };
+            })
+          : undefined;
+
+        // Se detetámos que a Firestore ainda tinha os valores 0.92 corrompidos, curamos imediatamente
+        if (docNeedsHealing && sanitizedPurchases) {
+          const healPayload = cleanForFirestore({
+            ...data,
+            purchases: sanitizedPurchases,
+            updatedAt: Date.now(),
+          });
+          setDoc(doc(db, 'portfolios', portfolioId, 'holdings', docSnap.id), healPayload, { merge: true }).catch((err) => {
+            console.warn('Silent Firestore heal sync:', err);
+          });
+        }
+
         holdings.push({
           id: docSnap.id,
           ticker: data.ticker || docSnap.id,
           shares: Number(data.shares || 0),
           createdAt: Number(data.createdAt || Date.now()),
           color: data.color,
-          purchases: Array.isArray(data.purchases)
-            ? data.purchases.map((p: any) => ({
-                id: p.id,
-                date: typeof p.date === 'string' ? new Date(p.date).getTime() : Number(p.date || data.createdAt || Date.now()),
-                shares: Number(p.shares || 0),
-                price: p.price !== undefined ? Number(p.price) : undefined,
-                priceEur: p.priceEur !== undefined ? Number(p.priceEur) : (p.totalCostEur && p.shares ? Number(p.totalCostEur) / Number(p.shares) : undefined),
-                currency: p.currency,
-                totalCostEur: p.totalCostEur !== undefined ? Number(p.totalCostEur) : undefined,
-                feeEur: p.feeEur !== undefined ? Number(p.feeEur) : undefined,
-              }))
-            : undefined,
+          purchases: sanitizedPurchases,
         });
       });
       
@@ -320,7 +421,7 @@ export async function saveHolding(
 
   try {
     const docRef = doc(db, 'portfolios', portfolioId, 'holdings', normalizedTicker);
-    await setDoc(docRef, dataToSave, { merge: true });
+    await setDoc(docRef, cleanForFirestore(dataToSave), { merge: true });
   } catch (firestoreErr) {
     console.warn('Firestore write fallback to sync:', firestoreErr);
   }
@@ -375,7 +476,7 @@ export async function uploadClientPortfolioToCloud(
   const depositsList = portfolioData.oldestDepositDate
     ? [
         {
-          date: portfolioData.oldestDepositDate.toLocaleDateString('pt-PT'),
+          date: formatDateDDMMYYYY(portfolioData.oldestDepositDate),
           amount: portfolioData.totalDeposited,
         },
       ]
@@ -483,6 +584,7 @@ export function computePortfolio(
   quotes: Record<string, any>
 ): {
   totalValue: number;
+  liveTotalValue: number;
   totalInvested: number;
   totalProfitEur: number;
   totalReturnPercent?: number;
@@ -493,6 +595,7 @@ export function computePortfolio(
   if (!holdings || !holdings.length) {
     return {
       totalValue: 0,
+      liveTotalValue: 0,
       totalInvested: 0,
       totalProfitEur: 0,
       totalReturnPercent: undefined,
@@ -541,6 +644,7 @@ export function computePortfolio(
   const consolidatedHoldings = Array.from(consolidatedMap.values());
 
   let totalPortfolioValue = 0;
+  let liveTotalPortfolioValue = 0;
   let totalPortfolioInvested = 0;
   const rawPositions: PortfolioPosition[] = [];
 
@@ -550,6 +654,7 @@ export function computePortfolio(
     const isError = !quote || Boolean(quote.error) || !quote.priceInEur || Number(quote.priceInEur) <= 0;
 
     const currentPriceInEur = isError ? 0 : Number(quote.priceInEur);
+    const livePriceInEur = isError ? 0 : Number(quote.livePriceInEur || quote.priceInEur);
     const nativePrice = isError ? 0 : Number(quote.price || 0);
     const nativeCurrency = isError ? 'EUR' : (quote.currency || 'EUR');
     const fxRateToEur = isError ? 1.0 : Number(quote.fxRateToEur || 1.0);
@@ -611,14 +716,15 @@ export function computePortfolio(
       });
 
       if (oldestPurchase) {
-        if (oldestPurchase.priceEur && oldestPurchase.priceEur > 0) {
-          firstPurchasePriceEur = Number(oldestPurchase.priceEur);
-        } else if (oldestPurchase.price && oldestPurchase.price > 0) {
-          let effPrice = oldestPurchase.price;
+        const sanitizedOldest = sanitizePurchaseRecord(oldestPurchase);
+        if (sanitizedOldest.totalCostEur && sanitizedOldest.shares > 0) {
+          firstPurchasePriceEur = sanitizedOldest.totalCostEur / sanitizedOldest.shares;
+        } else if (sanitizedOldest.priceEur && sanitizedOldest.priceEur > 0) {
+          firstPurchasePriceEur = Number(sanitizedOldest.priceEur);
+        } else if (sanitizedOldest.price && sanitizedOldest.price > 0) {
+          let effPrice = sanitizedOldest.price;
           if (isPence) effPrice = effPrice / 100;
           firstPurchasePriceEur = isForeignCurrency ? effPrice * fxRateToEur : effPrice;
-        } else if (oldestPurchase.totalCostEur && oldestPurchase.shares > 0) {
-          firstPurchasePriceEur = oldestPurchase.totalCostEur / oldestPurchase.shares;
         }
       }
     } else if (holding.createdAt && holding.createdAt > 0) {
@@ -638,7 +744,8 @@ export function computePortfolio(
     const normalizedLots: Array<{ timestamp: number; shares: number; costEur: number }> = [];
     let totalInvested = 0;
 
-    purchases.forEach((p) => {
+    purchases.forEach((rawP) => {
+      const p = sanitizePurchaseRecord(rawP);
       const sh = Number(p.shares || 0);
       if (sh <= 0) return;
 
@@ -698,6 +805,7 @@ export function computePortfolio(
 
     // 3. Valor Atual em EUR: quantidadeTotal × preçoAtualEmEUR
     const currentValue = isError || totalShares <= 0 ? 0 : totalShares * currentPriceInEur;
+    const liveCurrentValue = isError || totalShares <= 0 ? 0 : totalShares * livePriceInEur;
 
     // 4. Lucro/Prejuízo Total: currentValue - totalInvested
     const profitEur = !isError && totalInvested > 0 ? currentValue - totalInvested : 0;
@@ -770,7 +878,9 @@ export function computePortfolio(
       };
     };
 
-    const oneDayMs = 24 * 60 * 60 * 1000;
+    const nowObj = new Date();
+    const startOfDayUtc = Date.UTC(nowObj.getUTCFullYear(), nowObj.getUTCMonth(), nowObj.getUTCDate(), 0, 0, 0, 0);
+    const oneDayMs = Math.max(1000, now - startOfDayUtc);
     const oneWeekMs = 7 * 24 * 60 * 60 * 1000;
     const oneMonthMs = 30 * 24 * 60 * 60 * 1000;
     const threeMonthMs = 90 * 24 * 60 * 60 * 1000;
@@ -796,6 +906,7 @@ export function computePortfolio(
 
     if (!isError && totalShares > 0) {
       totalPortfolioValue += currentValue;
+      liveTotalPortfolioValue += liveCurrentValue;
       if (totalInvested > 0) {
         totalPortfolioInvested += totalInvested;
       }
@@ -855,6 +966,7 @@ export function computePortfolio(
 
   return {
     totalValue: Number(totalPortfolioValue.toFixed(2)),
+    liveTotalValue: Number(liveTotalPortfolioValue.toFixed(2)),
     totalInvested: Number(totalPortfolioInvested.toFixed(2)),
     totalProfitEur: Number(totalProfitEur.toFixed(2)),
     totalReturnPercent: portfolioReturnPercent,
@@ -876,7 +988,7 @@ export async function savePortfolioMeta(
   const metaWithTimestamp = { ...meta, updatedAt: Date.now() };
   try {
     const docRef = doc(db, 'portfolios', portfolioId);
-    await setDoc(docRef, metaWithTimestamp, { merge: true });
+    await setDoc(docRef, cleanForFirestore(metaWithTimestamp), { merge: true });
   } catch (err) {
     console.warn('savePortfolioMeta Firestore warning:', err);
   }

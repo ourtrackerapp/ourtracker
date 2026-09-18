@@ -120,6 +120,64 @@ export async function getExchangeRate(from: string, to: string = 'EUR'): Promise
 }
 
 /**
+ * Get historical exchange rate for a specific date (YYYY-MM-DD)
+ */
+export async function getHistoricalExchangeRate(dateStr: string, from: string = 'USD', to: string = 'EUR'): Promise<FxResult> {
+  const cleanFrom = from.trim().toUpperCase();
+  const cleanTo = to.trim().toUpperCase();
+
+  if (cleanFrom === cleanTo) {
+    return {
+      from: cleanFrom,
+      to: cleanTo,
+      rate: 1.0,
+      provider: 'Direct (1:1)',
+      timestamp: Date.now(),
+    };
+  }
+
+  const isPence = cleanFrom === 'GBP' && from === 'GBp';
+  const effectiveFrom = isPence ? 'GBP' : cleanFrom;
+
+  const cacheKey = `hist_${dateStr}_${effectiveFrom}_${cleanTo}`;
+  const cached = fxCache.get(cacheKey);
+  if (cached) {
+    return {
+      from: cleanFrom,
+      to: cleanTo,
+      rate: isPence ? cached.rate / 100 : cached.rate,
+      provider: `${cached.provider} (cached)`,
+      timestamp: cached.timestamp,
+    };
+  }
+
+  try {
+    const url = `https://api.frankfurter.dev/v1/${encodeURIComponent(dateStr)}?base=${encodeURIComponent(effectiveFrom)}&symbols=${encodeURIComponent(cleanTo)}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
+    if (res.ok) {
+      const data = await res.json();
+      const rate = data?.rates?.[cleanTo];
+      if (typeof rate === 'number' && rate > 0) {
+        fxCache.set(cacheKey, { rate, provider: 'Frankfurter BCE (Histórico)', timestamp: Date.now() });
+        return {
+          from: cleanFrom,
+          to: cleanTo,
+          rate: isPence ? rate / 100 : rate,
+          provider: 'Frankfurter BCE (Histórico)',
+          timestamp: Date.now(),
+        };
+      }
+    }
+  } catch (err) {
+    console.warn(`Historical FX failed for ${dateStr}, falling back to spot rate:`, err);
+  }
+
+  // Fallback to live current exchange rate
+  const liveFx = await getExchangeRate(from, to);
+  return liveFx;
+}
+
+/**
  * Batch convert an amount
  */
 export async function convertCurrency(

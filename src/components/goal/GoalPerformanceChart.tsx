@@ -98,15 +98,19 @@ export const GoalPerformanceChart: React.FC<GoalPerformanceChartProps> = ({
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
 
-    // Draw month labels along the bottom horizontal axis
+    // Draw month labels along the bottom horizontal axis (prevent overlapping by only drawing on month transitions)
+    let lastLabelDrawn = '';
     points.forEach((p, idx) => {
       const x = mapX(idx);
       if (x >= PADDING_LEFT && x <= dimensions.width - PADDING_RIGHT) {
         const monthShort = p.label.split(' ')[0]; // e.g. "Jan", "Fev"
-        ctx.fillStyle = '#94a3b8'; // slate-400
-        ctx.font = 'bold 9px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText(monthShort, x, dimensions.height - 8);
+        if (monthShort !== lastLabelDrawn) {
+          ctx.fillStyle = '#94a3b8'; // slate-400
+          ctx.font = 'bold 9px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText(monthShort, x, dimensions.height - 8);
+          lastLabelDrawn = monthShort;
+        }
       }
     });
 

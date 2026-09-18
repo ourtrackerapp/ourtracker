@@ -100,10 +100,10 @@ export const HomePerformanceChart: React.FC<Props> = ({
       if (period === '1D') {
         const pt = points[index];
         if (pt && pt.timestamp) {
-          const d = new Date(pt.timestamp);
-          const startOfDay = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0).getTime();
-          const endOfDay = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999).getTime();
-          const ratio = Math.max(0, Math.min(1, (pt.timestamp - startOfDay) / (endOfDay - startOfDay)));
+          const firstT = points[0].timestamp;
+          const lastT = points[points.length - 1].timestamp;
+          const range = lastT - firstT;
+          const ratio = range > 0 ? (pt.timestamp - firstT) / range : 0.5;
           return ratio * width;
         }
       }
@@ -126,46 +126,51 @@ export const HomePerformanceChart: React.FC<Props> = ({
     const drawSeries = (
       getVal: (pt: HomeChartPoint) => number | undefined,
       color: string,
-      lineWidth: number
+      lineWidth: number,
+      isDashed = false,
+      isBenchmark = false
     ) => {
       if (points.length === 0) return;
 
       let lastX: number | null = null;
       let lastY: number | null = null;
+      let lastPt: HomeChartPoint | null = null;
 
       points.forEach((pt, i) => {
         const val = getVal(pt);
         if (val === undefined) return;
 
-        // The line stops at current time
-        if (period === '1D' && pt.timestamp > Date.now()) {
-          return;
-        }
-
         const x = getX(i);
         const y = getY(val);
 
-        if (lastX === null || lastY === null) {
+        if (lastX === null || lastY === null || lastPt === null) {
           lastX = x;
           lastY = y;
+          lastPt = pt;
           return;
         }
 
+        const segmentDashed = isDashed;
+        
         ctx.beginPath();
         ctx.moveTo(lastX, lastY);
         ctx.lineTo(x, y);
 
-        // ALWAYS SOLID LINE as requested
-        ctx.setLineDash([]);
+        if (segmentDashed) {
+          ctx.setLineDash([4, 4]);
+        } else {
+          ctx.setLineDash([]);
+        }
 
         ctx.strokeStyle = color;
         ctx.lineWidth = lineWidth;
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
         ctx.stroke();
-
+      
         lastX = x;
         lastY = y;
+        lastPt = pt;
       });
     };
 
@@ -173,7 +178,7 @@ export const HomePerformanceChart: React.FC<Props> = ({
     if (showSp500) {
       ctx.save();
       ctx.globalAlpha = 1.0;
-      drawSeries((p) => p.sp500?.returnPercent, COLOR_SP500, 1.8);
+      drawSeries((p) => p.sp500?.returnPercent, COLOR_SP500, 1.8, false, true);
       ctx.restore();
     }
 
@@ -198,15 +203,6 @@ export const HomePerformanceChart: React.FC<Props> = ({
       ctx.strokeStyle = '#94A3B8'; // Slate 400
       ctx.lineWidth = 1;
       ctx.stroke();
-      ctx.restore();
-
-      // Draw date text statically at top left
-      ctx.save();
-      ctx.font = '500 11px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif';
-      ctx.fillStyle = '#64748B'; // Slate 500
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'top';
-      ctx.fillText(pt.formattedDate, 5, 5); // Static position at top left
       ctx.restore();
     }
 

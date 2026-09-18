@@ -37,9 +37,53 @@ export function withTimeout<T>(promise: Promise<T>, ms: number = PROVIDER_TIMEOU
   });
 }
 
+async function fetchYahooChartResult(sym: string, period1: string): Promise<any> {
+  const p1 = Math.floor(new Date(period1).getTime() / 1000);
+  const p2 = Math.floor(Date.now() / 1000);
+  const encoded = encodeURIComponent(sym);
+
+  // 1. Primary: query1
+  try {
+    const url1 = `https://query1.finance.yahoo.com/v8/finance/chart/${encoded}?period1=${p1}&period2=${p2}&interval=1d`;
+    const res1 = await fetch(url1, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+      },
+      signal: AbortSignal.timeout(3500)
+    });
+    if (res1.ok) {
+      const json1 = await res1.json();
+      if (json1?.chart?.result?.[0]) {
+        return json1.chart.result[0];
+      }
+    }
+  } catch (err) {
+    // query1 failed; falling back to query2
+  }
+
+  // 2. Fallback: query2
+  const url2 = `https://query2.finance.yahoo.com/v8/finance/chart/${encoded}?period1=${p1}&period2=${p2}&interval=1d`;
+  const res2 = await fetch(url2, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+    },
+    signal: AbortSignal.timeout(3500)
+  });
+  if (!res2.ok) {
+    const err = new Error(`Yahoo Query1 e Query2 falharam: ${res2.status}`);
+    (err as any).status = res2.status;
+    throw err;
+  }
+  const json2 = await res2.json();
+  if (!json2?.chart?.result?.[0]) {
+    throw new Error(`Dados inválidos na resposta da Yahoo para ${sym}`);
+  }
+  return json2.chart.result[0];
+}
+
 export async function getYahooRestQuote(ticker: string, errorCollector?: string[]): Promise<RawProviderQuote | null> {
   try {
-    const res = await withTimeout(fetchFromQuery2(ticker, new Date(Date.now() - 5 * 86400000).toISOString().slice(0, 10)), 4000);
+    const res = await withTimeout(fetchYahooChartResult(ticker, new Date(Date.now() - 5 * 86400000).toISOString().slice(0, 10)), 4000);
     if (res && res.meta) {
       const meta = res.meta;
       const prevClose = meta.chartPreviousClose || meta.previousClose;
@@ -84,17 +128,17 @@ export async function getYahooRestQuote(ticker: string, errorCollector?: string[
     }
   } catch (err: any) {
     const status = err?.status || (err?.response && err.response.status) || null;
-    const msg = `Yahoo-Query2 failed: ${err?.message || String(err)}${status ? ` (HTTP ${status})` : ''}`;
+    const msg = `Yahoo Query1/Query2 falhou: ${err?.message || String(err)}${status ? ` (HTTP ${status})` : ''}`;
     if (errorCollector) {
       errorCollector.push(msg);
     }
-    console.error(`[Yahoo-REST-Query2] Error fetching ${ticker}:`, {
-      provider: 'Yahoo-REST-Query2',
+    console.error(`[Yahoo-REST] Erro ao obter cotação de ${ticker}:`, {
+      provider: 'Yahoo-REST',
       ticker,
       message: err?.message || String(err),
       status
     });
-    // Fallback to yf.quote below
+    // Fallback para yf.quote abaixo
   }
 
   try {
@@ -161,6 +205,7 @@ export async function fetchReturnsForTicker(ticker: string): Promise<{
   weekReturn?: number;
   monthReturn?: number;
   threeMonthReturn?: number;
+  ytdReturn?: number;
   lastRegularClose?: number;
   prevDayClose?: number;
   extendedPrice?: number;
@@ -180,10 +225,13 @@ export async function fetchReturnsForTicker(ticker: string): Promise<{
   for (const sym of candidateSymbols) {
     try {
       const d = new Date();
-      d.setDate(d.getDate() - 110);
+      // Go back far enough to cover YTD (Jan 1 of current year)
+      const currentYearStart = new Date(new Date().getFullYear(), 0, 1);
+      const daysSinceYearStart = Math.ceil((Date.now() - currentYearStart.getTime()) / (1000 * 60 * 60 * 24)) + 15;
+      d.setDate(d.getDate() - Math.max(daysSinceYearStart, 365));
       const period1 = d.toISOString().slice(0, 10);
 
-      const res = await withTimeout(fetchFromQuery2(sym, period1), 4000);
+      const res = await withTimeout(fetchYahooChartResult(sym, period1), 4000);
 
       const timestamps = res.timestamp || [];
       const closes = res.indicators?.quote?.[0]?.close || [];
@@ -216,6 +264,7 @@ export async function fetchReturnsForTicker(ticker: string): Promise<{
       const target1w = nowMs - 7 * 86400000;
       const target1m = nowMs - 30 * 86400000;
       const target3m = nowMs - 90 * 86400000;
+      const jan1Ms = new Date(new Date().getFullYear(), 0, 1).getTime();
 
       const findCloseAtOrBefore = (targetMs: number) => {
         for (let i = quotes.length - 1; i >= 0; i--) {
@@ -230,15 +279,18 @@ export async function fetchReturnsForTicker(ticker: string): Promise<{
       const p1w = findCloseAtOrBefore(target1w);
       const p1m = findCloseAtOrBefore(target1m);
       const p3m = findCloseAtOrBefore(target3m);
+      const pYtd = findCloseAtOrBefore(jan1Ms);
 
       const weekReturn = p1w > 0 ? Number((((currentPrice - p1w) / p1w) * 100).toFixed(2)) : undefined;
       const monthReturn = p1m > 0 ? Number((((currentPrice - p1m) / p1m) * 100).toFixed(2)) : undefined;
       const threeMonthReturn = p3m > 0 ? Number((((currentPrice - p3m) / p3m) * 100).toFixed(2)) : undefined;
+      const ytdReturn = pYtd > 0 ? Number((((currentPrice - pYtd) / pYtd) * 100).toFixed(2)) : undefined;
 
       const result = {
         weekReturn,
         monthReturn,
         threeMonthReturn,
+        ytdReturn,
         lastRegularClose,
         prevDayClose,
         extendedPrice,

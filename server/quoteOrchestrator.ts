@@ -1,7 +1,4 @@
 import { RawProviderQuote, fetchReturnsForTicker, getYahooRestQuote } from './providers/yahoo.js';
-import { getFinnhubQuote, getFinnhubLivePrices } from './providers/finnhub.js';
-import { getAlpacaQuote } from './providers/alpaca.js';
-import { getAlpacaLivePrices } from './providers/alpacaWs.js';
 
 export interface StandardQuoteResponse {
   ticker: string;
@@ -10,10 +7,12 @@ export interface StandardQuoteResponse {
   currency: string;
   fxRateToEur: number;
   priceInEur: number;
+  livePriceInEur?: number;
   changePercent: number;
   weekReturnPercent?: number;
   monthReturnPercent?: number;
   threeMonthReturnPercent?: number;
+  ytdReturnPercent?: number;
   targetPrice?: number;
   timestamp: number;
   source?: string;
@@ -21,28 +20,8 @@ export interface StandardQuoteResponse {
   errorMessage?: string;
 }
 
-// Strict mapping Ticker -> Provider
-const STRICT_MAPPING: Record<string, 'ALPACA' | 'FINNHUB' | 'YAHOO-REST'> = {
-  'SPCX': 'FINNHUB',
-  'LEU': 'FINNHUB',
-  'SKHY': 'ALPACA',
-  'ORCL': 'ALPACA',
-  'ORACLE': 'ALPACA',
-  'GOOGL': 'ALPACA',
-  'ALPHABET': 'ALPACA',
-  'SKM': 'ALPACA',
-  'AMZN': 'ALPACA',
-  'AMAZON': 'ALPACA',
-  'SXR8': 'YAHOO-REST',
-  'SXR8.DE': 'YAHOO-REST',
-  'VVSM': 'YAHOO-REST',
-  'VVSM.DE': 'YAHOO-REST'
-};
-
-// Cache for deduplication and protecting against 429 rate limits
-// If a quote comes from live WebSocket stream, it is cached for 1.5s.
-// If a quote falls back to HTTP API call, it is strictly cached for 15s to prevent slamming APIs.
-const quoteCache = new Map<string, { data: StandardQuoteResponse; timestamp: number; isFromWs: boolean }>();
+// Cache for deduplication and protecting against rate limits
+const quoteCache = new Map<string, { data: StandardQuoteResponse; timestamp: number }>();
 
 export async function fetchSingleQuoteWithFallback(
   rawTicker: string,
@@ -52,108 +31,34 @@ export async function fetchSingleQuoteWithFallback(
   const cleanTicker = rawTicker.trim().toUpperCase();
   const now = Date.now();
 
-  // Smart caching check
+  // Cache check for high-frequency requests (allow fresh fetch on force or every 2.5 seconds)
   const cached = quoteCache.get(cleanTicker);
   if (cached) {
     const age = now - cached.timestamp;
-    // 1. If very fresh (less than 1.5s), always reuse (deduplication)
-    if (age < 1500) {
-      return cached.data;
-    }
-    // 2. If it was from an HTTP API call (not WS) and is less than 15s old, reuse to avoid 429 rate limits
-    if (!cached.isFromWs && age < 15000) {
-      return cached.data;
-    }
-    // 3. If force is false and is less than 15s old, reuse any cached quote
-    if (!force && age < 15000) {
+    if (age < 2500 && !force) {
       return cached.data;
     }
   }
 
-  // Normalize for mapping check (e.g. AMZN.US -> AMZN)
   const mappingKey = cleanTicker.endsWith('.US') 
     ? cleanTicker.replace(/\.US$/i, '') 
     : cleanTicker;
 
   const errorCollector: string[] = [];
-  let rawQuote: RawProviderQuote | null = null;
-  const provider = STRICT_MAPPING[mappingKey];
-  let isFromWs = false;
-
-  if (!provider) {
-    return {
-      ticker: cleanTicker,
-      name: cleanTicker,
-      price: 0,
-      currency: 'EUR',
-      fxRateToEur: 1,
-      priceInEur: 0,
-      changePercent: 0,
-      timestamp: now,
-      error: true,
-      errorMessage: `api "Provider desconhecido para ${cleanTicker}"`,
-    };
-  }
-
-  // Use mappingKey for the actual API calls to ensure consistency
   const activeTicker = mappingKey;
 
+  // 100% Yahoo Finance Provider
+  let yahooRawQuote: RawProviderQuote | null = null;
   try {
-    if (provider === 'ALPACA') {
-      const wsPrices = getAlpacaLivePrices();
-      if (wsPrices[activeTicker]) {
-        rawQuote = {
-          name: activeTicker,
-          price: wsPrices[activeTicker].price,
-          currency: 'USD',
-          source: 'Alpaca',
-        };
-        isFromWs = true;
-      } else {
-        rawQuote = await getAlpacaQuote(activeTicker, errorCollector);
-        if (rawQuote) rawQuote.source = 'Alpaca';
-      }
-      // Bulletproof fallback to Yahoo REST if Alpaca fails/returns null
-      if (!rawQuote || isNaN(rawQuote.price) || rawQuote.price <= 0) {
-        rawQuote = await getYahooRestQuote(activeTicker, errorCollector);
-        if (rawQuote) rawQuote.source = 'Yahoo-Fallback';
-      }
-    } else if (provider === 'FINNHUB') {
-      const fhPrices = getFinnhubLivePrices();
-      if (fhPrices[activeTicker]) {
-        rawQuote = {
-          name: activeTicker,
-          price: fhPrices[activeTicker].price,
-          currency: 'USD',
-          source: 'Finnhub',
-        };
-        isFromWs = true;
-      } else {
-        rawQuote = await getFinnhubQuote(activeTicker, errorCollector);
-        if (rawQuote) rawQuote.source = 'Finnhub';
-      }
-      // Bulletproof fallback to Yahoo REST if Finnhub fails/returns null
-      if (!rawQuote || isNaN(rawQuote.price) || rawQuote.price <= 0) {
-        rawQuote = await getYahooRestQuote(activeTicker, errorCollector);
-        if (rawQuote) rawQuote.source = 'Yahoo-Fallback';
-      }
-    } else if (provider === 'YAHOO-REST') {
-      rawQuote = await getYahooRestQuote(activeTicker, errorCollector);
-    }
+    yahooRawQuote = await getYahooRestQuote(activeTicker, errorCollector);
   } catch (err: any) {
     const status = err?.status || (err?.response && err.response.status) || null;
-    errorCollector.push(`Outer block error: ${err?.message || String(err)}${status ? ` (HTTP ${status})` : ''}`);
-    // Last resort fallback to Yahoo REST
-    try {
-      rawQuote = await getYahooRestQuote(activeTicker, errorCollector);
-      if (rawQuote) rawQuote.source = 'Yahoo-Fallback';
-    } catch (fallbackErr: any) {
-      const fbStatus = fallbackErr?.status || (fallbackErr?.response && fallbackErr.response.status) || null;
-      errorCollector.push(`Yahoo-Fallback final resort failed: ${fallbackErr?.message || String(fallbackErr)}${fbStatus ? ` (HTTP ${fbStatus})` : ''}`);
-    }
+    errorCollector.push(`Yahoo REST error: ${err?.message || String(err)}${status ? ` (HTTP ${status})` : ''}`);
   }
 
-  if (!rawQuote || isNaN(rawQuote.price) || rawQuote.price <= 0) {
+  const baseQuote = yahooRawQuote;
+
+  if (!baseQuote || isNaN(baseQuote.price) || baseQuote.price <= 0) {
     const errorDetails = errorCollector.length > 0 ? ` (${errorCollector.join('; ')})` : '';
     return {
       ticker: cleanTicker,
@@ -162,26 +67,30 @@ export async function fetchSingleQuoteWithFallback(
       currency: 'EUR',
       fxRateToEur: 1,
       priceInEur: 0,
+      livePriceInEur: 0,
       changePercent: 0,
       timestamp: now,
       error: true,
-      errorMessage: `api "${provider}"${errorDetails}`,
+      errorMessage: `api "YAHOO-REST"${errorDetails}`,
     };
   }
 
-  // Calculate live FX rate to EUR
-  let rawPrice = Number(rawQuote.price);
-  let currency = (rawQuote.currency || 'EUR').toUpperCase();
+  // Calculate live FX rate to EUR for primary price
+  let rawPrice = Number(baseQuote.price);
+  let currency = (baseQuote.currency || 'EUR').toUpperCase();
   const fxRateToEur = await getLiveFxRateToEur(currency);
   const priceInEur = Number((rawPrice * fxRateToEur).toFixed(4));
+  const livePriceInEur = priceInEur;
 
-  // Enrich returns and calculate accurate 1D change with pre/after market support
-  let finalChangePercent = rawQuote.changePercent ?? 0;
+  // Enrich returns and calculate accurate 1D change
+  let finalChangePercent = baseQuote.changePercent ?? 0;
+  let ytdReturnPercent: number | undefined = undefined;
   try {
     const returns = await fetchReturnsForTicker(cleanTicker);
-    rawQuote.weekReturnPercent = returns.weekReturn;
-    rawQuote.monthReturnPercent = returns.monthReturn;
-    rawQuote.threeMonthReturnPercent = returns.threeMonthReturn;
+    baseQuote.weekReturnPercent = returns.weekReturn;
+    baseQuote.monthReturnPercent = returns.monthReturn;
+    baseQuote.threeMonthReturnPercent = returns.threeMonthReturn;
+    ytdReturnPercent = returns.ytdReturn;
     
     if (returns.extendedChangePercent !== undefined) {
       finalChangePercent = returns.extendedChangePercent;
@@ -192,21 +101,23 @@ export async function fetchSingleQuoteWithFallback(
 
   const response: StandardQuoteResponse = {
     ticker: cleanTicker,
-    name: rawQuote.name || cleanTicker,
+    name: baseQuote.name || cleanTicker,
     price: Number(rawPrice.toFixed(4)),
     currency,
     fxRateToEur,
     priceInEur,
+    livePriceInEur,
     changePercent: finalChangePercent,
-    weekReturnPercent: rawQuote.weekReturnPercent,
-    monthReturnPercent: rawQuote.monthReturnPercent,
-    threeMonthReturnPercent: rawQuote.threeMonthReturnPercent,
+    weekReturnPercent: baseQuote.weekReturnPercent,
+    monthReturnPercent: baseQuote.monthReturnPercent,
+    threeMonthReturnPercent: baseQuote.threeMonthReturnPercent,
+    ytdReturnPercent,
     timestamp: now,
-    source: rawQuote.source,
+    source: 'Yahoo-REST',
   };
 
   // Update cache
-  quoteCache.set(cleanTicker, { data: response, timestamp: now, isFromWs });
+  quoteCache.set(cleanTicker, { data: response, timestamp: now });
 
   return response;
 }

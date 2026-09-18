@@ -98,4 +98,21 @@ export interface PdfParseResponse {
   rawTextPreview?: string;
 }
 
-export type TabType = 'home' | 'allocation' | 'goal' | 'settings';
+export type TabType = 'home' | 'allocation' | 'analysis' | 'goal' | 'settings';
+
+export interface PortfolioAnalysisResult {
+  thesis: {
+    title: string;
+    globalStrategy: string;
+    keyPoints: string[];
+  };
+  allocations: {
+    ticker: string;
+    percentage: number;
+    amount: number;
+    reason: string;
+    action: 'COMPRA' | 'MANTER' | 'REDUZIR';
+  }[];
+  totalAporte: number;
+  timestamp: number;
+}

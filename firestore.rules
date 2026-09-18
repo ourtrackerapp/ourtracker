@@ -6,6 +6,10 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    match /ai_analysis_cache/{ticker} {
+      allow read, write: if isValidId(ticker);
+    }
+
     match /portfolios/{portfolioId} {
       allow read, write: if isValidId(portfolioId);
 
@@ -20,7 +24,7 @@ service cloud.firestore {
 
     // Secure helper to prevent ID poisoning and invalid paths
     function isValidId(id) {
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-\\.]+$');
     }
   }
 }

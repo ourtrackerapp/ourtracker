@@ -1,9 +1,9 @@
 import express from 'express';
 import path from 'path';
-import { getExchangeRate } from './serverFx.js';
+import fs from 'fs';
+import { getExchangeRate, getHistoricalExchangeRate } from './serverFx.js';
 import { orchestrateQuotes, fetchSingleQuoteWithFallback } from './server/quoteOrchestrator.js';
-import { connectAlpacaStream, getAlpacaLivePrices } from './server/providers/alpacaWs.js';
-import { connectFinnhubStream } from './server/providers/finnhub.js';
+import { performAiAnalysis, performPortfolioAnalysis } from './server/aiAnalyst.js';
 
 
 interface CachedData<T> {
@@ -467,7 +467,7 @@ async function fetchQuoteSummaryData(symbol: string) {
   }
 
   const crumbParam = session?.crumb ? `&crumb=${encodeURIComponent(session.crumb)}` : '';
-  const modules = 'summaryDetail,defaultKeyStatistics,financialData,calendarEvents';
+  const modules = 'summaryDetail,defaultKeyStatistics,financialData,calendarEvents,recommendationTrend';
 
   try {
     let res: Response | null = null;
@@ -729,10 +729,47 @@ async function fetchChartFromYahoo(ticker: string, requestedRange: string = '1m'
         }
       }
 
-      // Preço atual em EUR: ponto mais recente do gráfico
+      if (cleanReqRange === '1d') {
+        const now = new Date();
+        const startOfDay = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0);
+        const endOfDay = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999);
+        
+        let filtered = points.filter((pt) => pt.timestamp >= startOfDay && pt.timestamp <= endOfDay);
+        if (filtered.length === 0) {
+          filtered = points.filter((pt) => pt.timestamp >= (Date.now() - 24 * 3600 * 1000));
+        }
+
+        if (filtered.length > 0) {
+          points.length = 0;
+          points.push(...filtered);
+        }
+      }
+
+      // Preço atual em EUR: ponto mais recente do gráfico ancorado ao preço real mais recente
       const lastPoint = points[points.length - 1];
       const currentPriceNative = meta.regularMarketPrice ?? lastPoint.price;
-      const currentPriceEur = lastPoint.priceEur;
+      const currentPriceEur = isGBp ? (currentPriceNative / 100) * currentSpotFx : currentPriceNative * currentSpotFx;
+
+      // Assegurar que o último ponto da série tem exatamente o preço atual em tempo real
+      if (currentPriceNative != null && currentPriceNative > 0) {
+        const nowTs = Date.now();
+        const timeDiff = nowTs - lastPoint.timestamp;
+        if (timeDiff < 1000 * 60 * 60 * 4) {
+          // Se for recente (mesmo dia), atualiza o último ponto
+          lastPoint.price = Number(currentPriceNative.toFixed(4));
+          lastPoint.priceEur = Number(currentPriceEur.toFixed(4));
+          lastPoint.timestamp = Math.max(lastPoint.timestamp, nowTs - 30000);
+        } else {
+          // Se o último ponto for de sessão anterior (ex: velas diárias em 1M, 1y), anexa ponto em tempo real
+          points.push({
+            timestamp: nowTs,
+            date: new Date(nowTs).toISOString(),
+            price: Number(currentPriceNative.toFixed(4)),
+            priceEur: Number(currentPriceEur.toFixed(4)),
+            isMarketOpen: true,
+          });
+        }
+      }
 
       const prevCloseNative = meta.chartPreviousClose ?? meta.previousClose ?? points[0].price;
       const prevCloseEur = isGBp ? (prevCloseNative / 100) * currentSpotFx : prevCloseNative * currentSpotFx;
@@ -751,7 +788,9 @@ async function fetchChartFromYahoo(ticker: string, requestedRange: string = '1m'
       let targetStartDate = new Date(endDate);
 
       if (cleanReqRange === '1d') {
-        targetStartDate.setDate(targetStartDate.getDate() - 1);
+        const now = new Date();
+        const startOfDay = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0);
+        targetStartDate = new Date(startOfDay);
       } else if (cleanReqRange === '1w') {
         targetStartDate.setDate(targetStartDate.getDate() - 7);
       } else if (cleanReqRange === '1m') {
@@ -821,6 +860,7 @@ async function fetchChartFromYahoo(ticker: string, requestedRange: string = '1m'
       const keyStats = summary?.defaultKeyStatistics || {};
       const financial = summary?.financialData || {};
       const calendar = summary?.calendarEvents || {};
+      const recTrendRaw = summary?.recommendationTrend?.trend?.[0] || null;
 
       const dayHighNative = summaryDetail.dayHigh?.raw ?? meta.regularMarketDayHigh ?? null;
       const dayLowNative = summaryDetail.dayLow?.raw ?? meta.regularMarketDayLow ?? null;
@@ -838,16 +878,34 @@ async function fetchChartFromYahoo(ticker: string, requestedRange: string = '1m'
         fiftyTwoWeekRangePercent = Math.max(0, Math.min(100, ratio * 100));
       }
 
+      // Valuation
       const pe = summaryDetail.trailingPE?.raw ?? summaryDetail.forwardPE?.raw ?? null;
+      const forwardPE = summaryDetail.forwardPE?.raw ?? keyStats.forwardPE?.raw ?? null;
+      const pegRatio = keyStats.pegRatio?.raw ?? null;
       const pb = keyStats.priceToBook?.raw ?? null;
       const ps = summaryDetail.priceToSalesTrailing12Months?.raw ?? null;
-      const epsNative = keyStats.trailingEps?.raw ?? keyStats.forwardEps?.raw ?? null;
+      const evEbitda = keyStats.enterpriseToEbitda?.raw ?? null;
+      const evRevenue = keyStats.enterpriseToRevenue?.raw ?? null;
+      const epsNative = keyStats.trailingEps?.raw ?? null;
       const epsEur = epsNative != null ? (isGBp ? (epsNative / 100) * currentSpotFx : epsNative * currentSpotFx) : null;
+      const forwardEpsNative = keyStats.forwardEps?.raw ?? null;
+      const forwardEpsEur = forwardEpsNative != null ? (isGBp ? (forwardEpsNative / 100) * currentSpotFx : forwardEpsNative * currentSpotFx) : null;
       const beta = summaryDetail.beta?.raw ?? keyStats.beta?.raw ?? null;
 
+      // Wall Street Target Prices
       const targetPriceNative = financial.targetMeanPrice?.raw ?? null;
       const targetPriceEur = targetPriceNative != null ? (isGBp ? (targetPriceNative / 100) * currentSpotFx : targetPriceNative * currentSpotFx) : null;
-      
+      const targetHighNative = financial.targetHighPrice?.raw ?? null;
+      const targetHighEur = targetHighNative != null ? (isGBp ? (targetHighNative / 100) * currentSpotFx : targetHighNative * currentSpotFx) : null;
+      const targetLowNative = financial.targetLowPrice?.raw ?? null;
+      const targetLowEur = targetLowNative != null ? (isGBp ? (targetLowNative / 100) * currentSpotFx : targetLowNative * currentSpotFx) : null;
+      const targetMedianNative = financial.targetMedianPrice?.raw ?? null;
+      const targetMedianEur = targetMedianNative != null ? (isGBp ? (targetMedianNative / 100) * currentSpotFx : targetMedianNative * currentSpotFx) : null;
+      const targetUpsidePercent = (targetPriceEur != null && currentPriceEur > 0)
+        ? Number((((targetPriceEur - currentPriceEur) / currentPriceEur) * 100).toFixed(2))
+        : null;
+
+      // Wall Street Recommendations
       let recommendation: string | null = null;
       if (financial.recommendationKey) {
         const recKey = String(financial.recommendationKey).toLowerCase();
@@ -857,13 +915,49 @@ async function fetchChartFromYahoo(ticker: string, requestedRange: string = '1m'
         else if (recKey === 'underperform') recommendation = 'Desempenho Inferior';
         else if (recKey === 'sell') recommendation = 'Venda';
       }
+      const recommendationMean = financial.recommendationMean?.raw ?? null;
+      const numberOfAnalystOpinions = financial.numberOfAnalystOpinions?.raw ?? null;
+      const recommendationTrend = recTrendRaw ? {
+        strongBuy: recTrendRaw.strongBuy ?? 0,
+        buy: recTrendRaw.buy ?? 0,
+        hold: recTrendRaw.hold ?? 0,
+        underperform: recTrendRaw.underperform ?? 0,
+        sell: recTrendRaw.sell ?? 0,
+      } : null;
 
+      // Profitability & Margins
+      const profitMargins = financial.profitMargins?.raw != null ? Number((financial.profitMargins.raw * 100).toFixed(2)) : null;
+      const operatingMargins = financial.operatingMargins?.raw != null ? Number((financial.operatingMargins.raw * 100).toFixed(2)) : null;
+      const grossMargins = financial.grossMargins?.raw != null ? Number((financial.grossMargins.raw * 100).toFixed(2)) : null;
+      const returnOnEquity = financial.returnOnEquity?.raw != null ? Number((financial.returnOnEquity.raw * 100).toFixed(2)) : null;
+      const returnOnAssets = financial.returnOnAssets?.raw != null ? Number((financial.returnOnAssets.raw * 100).toFixed(2)) : null;
+
+      // Balance Sheet & Cash
+      const totalCashNative = financial.totalCash?.raw ?? null;
+      const totalCashEur = totalCashNative != null ? (isGBp ? (totalCashNative / 100) * currentSpotFx : totalCashNative * currentSpotFx) : null;
+      const totalDebtNative = financial.totalDebt?.raw ?? null;
+      const totalDebtEur = totalDebtNative != null ? (isGBp ? (totalDebtNative / 100) * currentSpotFx : totalDebtNative * currentSpotFx) : null;
+      const currentRatio = financial.currentRatio?.raw ?? null;
+      const debtToEquity = financial.debtToEquity?.raw ?? null;
+      const freeCashflowNative = financial.freeCashflow?.raw ?? null;
+      const freeCashflowEur = freeCashflowNative != null ? (isGBp ? (freeCashflowNative / 100) * currentSpotFx : freeCashflowNative * currentSpotFx) : null;
+      const marketCapNative = summaryDetail.marketCap?.raw ?? null;
+      const marketCapEur = marketCapNative != null ? (isGBp ? (marketCapNative / 100) * currentSpotFx : marketCapNative * currentSpotFx) : null;
+
+      // Ownership & Short Sentiment
+      const heldPercentInstitutions = keyStats.heldPercentInstitutions?.raw != null ? Number((keyStats.heldPercentInstitutions.raw * 100).toFixed(2)) : null;
+      const heldPercentInsiders = keyStats.heldPercentInsiders?.raw != null ? Number((keyStats.heldPercentInsiders.raw * 100).toFixed(2)) : null;
+      const shortPercentOfFloat = keyStats.shortPercentOfFloat?.raw != null ? Number((keyStats.shortPercentOfFloat.raw * 100).toFixed(2)) : null;
+
+      // Dividends
       let dividendYield: number | null = null;
       if (summaryDetail.dividendYield?.raw != null) {
         dividendYield = summaryDetail.dividendYield.raw * 100;
       }
       const dividendRateNative = summaryDetail.dividendRate?.raw ?? null;
       const dividendRateEur = dividendRateNative != null ? (isGBp ? (dividendRateNative / 100) * currentSpotFx : dividendRateNative * currentSpotFx) : null;
+      const payoutRatio = summaryDetail.payoutRatio?.raw != null ? Number((summaryDetail.payoutRatio.raw * 100).toFixed(2)) : null;
+      const fiveYearAvgDividendYield = summaryDetail.fiveYearAvgDividendYield?.raw ?? null;
 
       let exDividendDate: string | null = null;
       if (summaryDetail.exDividendDate?.raw) {
@@ -894,18 +988,68 @@ async function fetchChartFromYahoo(ticker: string, requestedRange: string = '1m'
         fiftyTwoWeekHighEur,
         fiftyTwoWeekLowEur,
         fiftyTwoWeekRangePercent,
+
+        // Valuation
         pe: pe != null ? Number(pe.toFixed(2)) : null,
+        forwardPE: forwardPE != null ? Number(forwardPE.toFixed(2)) : null,
+        pegRatio: pegRatio != null ? Number(pegRatio.toFixed(2)) : null,
         pb: pb != null ? Number(pb.toFixed(2)) : null,
         ps: ps != null ? Number(ps.toFixed(2)) : null,
+        evEbitda: evEbitda != null ? Number(evEbitda.toFixed(2)) : null,
+        evRevenue: evRevenue != null ? Number(evRevenue.toFixed(2)) : null,
         eps: epsNative != null ? Number(epsNative.toFixed(2)) : null,
         epsEur: epsEur != null ? Number(epsEur.toFixed(2)) : null,
+        forwardEps: forwardEpsNative != null ? Number(forwardEpsNative.toFixed(2)) : null,
+        forwardEpsEur: forwardEpsEur != null ? Number(forwardEpsEur.toFixed(2)) : null,
         beta: beta != null ? Number(beta.toFixed(2)) : null,
+
+        // Wall Street Targets
         targetPrice: targetPriceNative != null ? Number(targetPriceNative.toFixed(2)) : null,
         targetPriceEur: targetPriceEur != null ? Number(targetPriceEur.toFixed(2)) : null,
+        targetHigh: targetHighNative != null ? Number(targetHighNative.toFixed(2)) : null,
+        targetHighEur: targetHighEur != null ? Number(targetHighEur.toFixed(2)) : null,
+        targetLow: targetLowNative != null ? Number(targetLowNative.toFixed(2)) : null,
+        targetLowEur: targetLowEur != null ? Number(targetLowEur.toFixed(2)) : null,
+        targetMedian: targetMedianNative != null ? Number(targetMedianNative.toFixed(2)) : null,
+        targetMedianEur: targetMedianEur != null ? Number(targetMedianEur.toFixed(2)) : null,
+        targetUpsidePercent,
+
+        // Recommendations
         recommendation,
+        recommendationMean: recommendationMean != null ? Number(recommendationMean.toFixed(2)) : null,
+        numberOfAnalystOpinions,
+        recommendationTrend,
+
+        // Profitability & Margins
+        profitMargins,
+        operatingMargins,
+        grossMargins,
+        returnOnEquity,
+        returnOnAssets,
+
+        // Balance Sheet & Cash
+        totalCash: totalCashNative,
+        totalCashEur,
+        totalDebt: totalDebtNative,
+        totalDebtEur,
+        currentRatio: currentRatio != null ? Number(currentRatio.toFixed(2)) : null,
+        debtToEquity: debtToEquity != null ? Number(debtToEquity.toFixed(2)) : null,
+        freeCashflow: freeCashflowNative,
+        freeCashflowEur,
+        marketCap: marketCapNative,
+        marketCapEur,
+
+        // Ownership & Short Sentiment
+        heldPercentInstitutions,
+        heldPercentInsiders,
+        shortPercentOfFloat,
+
+        // Dividends & Calendar
         dividendYield: dividendYield != null ? Number(dividendYield.toFixed(2)) : null,
         dividendRate: dividendRateNative != null ? Number(dividendRateNative.toFixed(2)) : null,
         dividendRateEur: dividendRateEur != null ? Number(dividendRateEur.toFixed(2)) : null,
+        payoutRatio,
+        fiveYearAvgDividendYield: fiveYearAvgDividendYield != null ? Number(fiveYearAvgDividendYield.toFixed(2)) : null,
         exDividendDate,
         earningsDate,
       };
@@ -958,11 +1102,92 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Sincronização e Backup Cloud redundante em tempo real
-let globalPortfolioSyncState: any = {
-  holdings: [],
-  meta: { totalDeposited: 0, deposits: [] },
-  backups: []
+const PORTFOLIO_DATA_PATH = path.join(process.cwd(), 'portfolio_data.json');
+
+function loadPortfolioDataFromDisk(): any {
+  try {
+    if (fs.existsSync(PORTFOLIO_DATA_PATH)) {
+      const raw = fs.readFileSync(PORTFOLIO_DATA_PATH, 'utf-8');
+      const parsed = JSON.parse(raw);
+      return {
+        holdings: Array.isArray(parsed.holdings) ? parsed.holdings : [],
+        meta: {
+          totalDeposited: typeof parsed.totalDeposited === 'number' ? parsed.totalDeposited : 781.28,
+          deposits: Array.isArray(parsed.deposits) ? parsed.deposits : []
+        },
+        backups: Array.isArray(parsed.backups) ? parsed.backups : [],
+        lastUpdated: new Date().toISOString()
+      };
+    }
+  } catch (err) {
+    console.warn('Error reading portfolio_data.json:', err);
+  }
+  return {
+    holdings: [],
+    meta: { totalDeposited: 781.28, deposits: [] },
+    backups: []
+  };
+}
+
+const VERIFIED_PURCHASE_OVERWRITES: Record<string, { priceEur: number; totalCostEur: number }> = {
+  'p-1789736116849-0': { priceEur: 123.50, totalCostEur: 26.96 },
+  'p-1789736138319-1': { priceEur: 123.3425, totalCostEur: 35.72 },
+  'p-1789736061271-0': { priceEur: 119.1846, totalCostEur: 9.94 },
+  'p-1789736085738-1': { priceEur: 140.3508, totalCostEur: 34.40 },
+  'p-1789735943124-0': { priceEur: 128.98, totalCostEur: 13.53 },
+  'p-1789735967003-1': { priceEur: 127.4539, totalCostEur: 25.58 },
+  'p-1789735855124-0': { priceEur: 291.5888, totalCostEur: 21.84 },
+  'p-1789735892129-1': { priceEur: 299.1182, totalCostEur: 16.96 },
+  'p-1789735770092-0': { priceEur: 29.0481, totalCostEur: 11.23 },
+  'p-1789735797518-1': { priceEur: 33.0179, totalCostEur: 25.82 },
+  'p-1789735690522-0': { priceEur: 227.8956, totalCostEur: 13.97 },
+  'p-1789735730800-1': { priceEur: 221.0956, totalCostEur: 18.97 },
+  'p-1789735453255-0': { priceEur: 162.1622, totalCostEur: 3.60 },
+  'p-1789735544570-1': { priceEur: 162.9730, totalCostEur: 12.06 },
+  'p-1789735571933-2': { priceEur: 146.0298, totalCostEur: 24.46 },
+  'p-1789735590833-3': { priceEur: 125.0871, totalCostEur: 3.59 },
+  'p-1789736254536-0': { priceEur: 696.34, totalCostEur: 194.98 },
+  'p-1789736278851-1': { priceEur: 713.82, totalCostEur: 193.09 },
+  'p-1789736176981-0': { priceEur: 89.83, totalCostEur: 40.00 },
+  'p-1789736199598-1': { priceEur: 89.51, totalCostEur: 24.50 },
+  'p-1789736215734-2': { priceEur: 89.24, totalCostEur: 29.99 },
 };
+
+function sanitizeHoldingPurchases(holdings: any[]): any[] {
+  if (!Array.isArray(holdings)) return [];
+  return holdings.map((h: any) => {
+    if (!Array.isArray(h.purchases)) return h;
+    return {
+      ...h,
+      purchases: h.purchases.map((p: any) => {
+        if (p.id && VERIFIED_PURCHASE_OVERWRITES[p.id]) {
+          return {
+            ...p,
+            priceEur: VERIFIED_PURCHASE_OVERWRITES[p.id].priceEur,
+            totalCostEur: VERIFIED_PURCHASE_OVERWRITES[p.id].totalCostEur,
+          };
+        }
+        return p;
+      })
+    };
+  });
+}
+
+function savePortfolioDataToDisk(data: any) {
+  try {
+    const toSave = {
+      totalDeposited: data?.meta?.totalDeposited ?? data?.totalDeposited ?? 781.28,
+      deposits: data?.meta?.deposits ?? data?.deposits ?? [],
+      holdings: sanitizeHoldingPurchases(data?.holdings ?? []),
+      backups: data?.backups ?? []
+    };
+    fs.writeFileSync(PORTFOLIO_DATA_PATH, JSON.stringify(toSave, null, 2), 'utf-8');
+  } catch (err) {
+    console.warn('Error saving portfolio_data.json:', err);
+  }
+}
+
+let globalPortfolioSyncState: any = loadPortfolioDataFromDisk();
 
 app.get('/api/portfolio/sync', (req, res) => {
   res.json({
@@ -976,11 +1201,14 @@ app.post('/api/portfolio/sync', (req, res) => {
   try {
     const { data } = req.body;
     if (data) {
+      const sanitizedHoldings = data.holdings ? sanitizeHoldingPurchases(data.holdings) : globalPortfolioSyncState.holdings;
       globalPortfolioSyncState = {
         ...globalPortfolioSyncState,
         ...data,
+        holdings: sanitizedHoldings,
         lastUpdated: new Date().toISOString()
       };
+      savePortfolioDataToDisk(globalPortfolioSyncState);
       return res.json({ success: true, message: 'Portfólio sincronizado com sucesso!' });
     }
     return res.status(400).json({ error: 'Dados inválidos' });
@@ -1121,14 +1349,6 @@ const handleBatchQuotes = async (req: express.Request, res: express.Response) =>
     return res.json({ quotes: {} });
   }
 
-  // Auto-subscribe WebSockets dynamically for requested tickers (only on standalone servers, not Vercel Serverless)
-  try {
-    if (!process.env.VERCEL) {
-      connectAlpacaStream(tickers);
-      connectFinnhubStream(tickers);
-    }
-  } catch {}
-
   try {
     const quotesResult = await orchestrateQuotes(tickers, getFxRateToEur, force);
     res.json({ quotes: quotesResult });
@@ -1141,14 +1361,16 @@ const handleBatchQuotes = async (req: express.Request, res: express.Response) =>
 app.get('/api/quotes', handleBatchQuotes);
 app.post('/api/quotes', handleBatchQuotes);
 
-// 6. API FX Rate
-app.get('/api/fx/:from', async (req, res) => {
+// 6. API FX Historical
+app.get('/api/fx/historical', async (req, res) => {
   try {
-    const from = req.params.from.toUpperCase();
-    const rate = await getFxRateToEur(from);
-    res.json({ from, to: 'EUR', rate });
+    const date = ((req.query.date as string) || new Date().toISOString().split('T')[0]).trim();
+    const from = ((req.query.from as string) || 'USD').toUpperCase();
+    const to = ((req.query.to as string) || 'EUR').toUpperCase();
+    const fx = await getHistoricalExchangeRate(date, from, to);
+    res.json(fx);
   } catch (err: any) {
-    res.status(500).json({ error: err?.message || 'Failed to fetch FX' });
+    res.status(500).json({ error: err?.message || 'Failed to fetch historical FX' });
   }
 });
 
@@ -1164,25 +1386,49 @@ app.get('/api/fx/convert/rate', async (req, res) => {
   }
 });
 
-// 8. Alpaca WebSocket Live Prices
-app.get('/api/alpaca/live', (req, res) => {
-  res.json({ prices: getAlpacaLivePrices() });
-});
-
-app.post('/api/alpaca/subscribe', (req, res) => {
-  const symbols = req.body?.symbols || req.body?.tickers || [];
-  if (Array.isArray(symbols) && symbols.length > 0 && !process.env.VERCEL) {
-    connectAlpacaStream(symbols);
-    connectFinnhubStream(symbols);
+// 8. API FX Rate
+app.get('/api/fx/:from', async (req, res) => {
+  try {
+    const from = req.params.from.toUpperCase();
+    const rate = await getFxRateToEur(from);
+    res.json({ from, to: 'EUR', rate });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Failed to fetch FX' });
   }
-  res.json({ status: 'ok', subscribed: symbols });
 });
 
-// Initialize WebSocket streams on boot (only on standalone servers, not Vercel Serverless)
-if (!process.env.VERCEL) {
-  connectAlpacaStream(['SKHY', 'ORCL', 'GOOGL', 'SKM', 'AMZN']);
-  connectFinnhubStream(['SPCX', 'LEU']);
-}
+// 9. API AI Analyst
+app.post('/api/ai/analyze', async (req, res) => {
+  const { ticker, portfolioData } = req.body || {};
+  if (!ticker) {
+    return res.status(400).json({ error: 'Ticker is required' });
+  }
+  try {
+    console.log(`[AI Analyst Route] Starting analysis for ticker: ${ticker}`);
+    const analysis = await performAiAnalysis(ticker, portfolioData || {});
+    console.log(`[AI Analyst Route] Successfully completed analysis for ticker: ${ticker}`);
+    res.json(analysis);
+  } catch (error: any) {
+    console.error(`[AI Analyst Route Error] Ticker: ${ticker}:`, error);
+    res.status(500).json({ error: error?.message || 'Failed to perform AI analysis' });
+  }
+});
+
+app.post('/api/ai/analyze-portfolio', async (req, res) => {
+  const { totalAporte, positions } = req.body || {};
+  if (totalAporte === undefined || !positions) {
+    return res.status(400).json({ error: 'totalAporte and positions are required' });
+  }
+  try {
+    console.log(`[AI Portfolio Analyst] Starting analysis for portfolio. Aporte: ${totalAporte}`);
+    const analysis = await performPortfolioAnalysis(Number(totalAporte), positions);
+    console.log(`[AI Portfolio Analyst] Successfully completed portfolio analysis`);
+    res.json(analysis);
+  } catch (error: any) {
+    console.error(`[AI Portfolio Analyst Error]:`, error);
+    res.status(500).json({ error: error?.message || 'Failed to perform portfolio analysis' });
+  }
+});
 
 // In development / production
 if (!process.env.VERCEL) {

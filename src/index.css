@@ -82,3 +82,37 @@
   -ms-overflow-style: none;
   scrollbar-width: none;
 }
+
+@keyframes iconStrokeGlance {
+  0% {
+    mask-position: -150% 0;
+    -webkit-mask-position: -150% 0;
+  }
+  100% {
+    mask-position: 250% 0;
+    -webkit-mask-position: 250% 0;
+  }
+}
+
+.symbol-glance-overlay {
+  mask-image: linear-gradient(
+    115deg,
+    transparent 0%,
+    transparent 35%,
+    rgba(0, 0, 0, 1) 50%,
+    transparent 65%,
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    115deg,
+    transparent 0%,
+    transparent 35%,
+    rgba(0, 0, 0, 1) 50%,
+    transparent 65%,
+    transparent 100%
+  );
+  mask-size: 200% 100%;
+  -webkit-mask-size: 200% 100%;
+  animation: iconStrokeGlance 3s infinite linear;
+}
+

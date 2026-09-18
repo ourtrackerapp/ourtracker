@@ -97,8 +97,8 @@ export const HoldingsSection: React.FC<HoldingsSectionProps> = ({
                     <div className="flex items-center gap-3">
                       {item.totalReturnPercent !== undefined ? (
                         <span
-                          title={item.firstPurchaseDate ? `Desde compra (${item.firstPurchaseDate})` : 'Desde compra'}
-                          aria-label={item.firstPurchaseDate ? `Rentabilidade desde a primeira compra em ${item.firstPurchaseDate}` : 'Desde compra'}
+                          title={item.firstPurchaseDate ? `Rentabilidade desde a primeira compra (${item.firstPurchaseDate}) considerando todas as compras` : 'Rentabilidade total'}
+                          aria-label={item.firstPurchaseDate ? `Rentabilidade desde a primeira compra em ${item.firstPurchaseDate} considerando todas as compras` : 'Rentabilidade total'}
                           className={`text-xs font-bold tabular-nums ${
                             item.totalReturnPercent >= 0 ? 'text-emerald-600' : 'text-rose-600'
                           }`}
